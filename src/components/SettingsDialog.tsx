@@ -12,6 +12,7 @@
  *     seen snapping back to 32 rather than sitting there looking accepted.
  */
 
+import { CategoryFolders } from "./CategoryFolders";
 import {
   useCallback,
   useEffect,
@@ -138,16 +139,30 @@ function DraftInput({
   const timer = useRef<number | undefined>(undefined);
   const commitRef = useRef(onCommit);
   commitRef.current = onCommit;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
 
   useEffect(() => {
     // Adopt an external change only while nothing local is pending.
     if (edits.current === settled.current) setDraft(value);
   }, [value]);
 
-  useEffect(() => () => window.clearTimeout(timer.current), []);
+  useEffect(
+    () => () => {
+      if (timer.current === undefined) return;
+      window.clearTimeout(timer.current);
+      // Escape closes the dialog without blurring the field first, so a
+      // debounce still waiting here would be thrown away — and the footer
+      // promises the change was saved. Commit it on the way out. This touches
+      // no React state, only the store, so running after unmount is safe.
+      void commitRef.current(draftRef.current);
+    },
+    [],
+  );
 
   const flush = useCallback(async (raw: string) => {
     window.clearTimeout(timer.current);
+    timer.current = undefined;
     const mine = edits.current;
     const text = await commitRef.current(raw);
     if (edits.current !== mine) return;
@@ -341,16 +356,7 @@ function GeneralTab({ settings }: { settings: Settings }) {
           </Field>
         </div>
 
-        <Row
-          label="Sort into category folders"
-          hint="Files go into Video, Audio, Documents and so on, under the download folder."
-        >
-          <Switch
-            checked={settings.sortIntoCategories}
-            label="Sort into category folders"
-            onChange={(v) => void patch({ sortIntoCategories: v })}
-          />
-        </Row>
+        <CategoryFolders settings={settings} />
 
         <Row
           label="When the file already exists"

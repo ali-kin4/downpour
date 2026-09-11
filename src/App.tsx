@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { AddDialog } from "./components/AddDialog";
 import { CommandPalette } from "./components/CommandPalette";
+import { CompletionDialog } from "./components/CompletionDialog";
 import { DownloadList } from "./components/DownloadList";
 import { MenuBar } from "./components/MenuBar";
 import { PasteDialog } from "./components/PasteDialog";
@@ -102,6 +103,7 @@ export function App() {
       <PasteDialog />
       <SettingsDialog />
       <CommandPalette />
+      <CompletionDialog />
       <Toasts />
     </div>
   );

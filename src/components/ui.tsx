@@ -45,7 +45,7 @@ export function Button({
       type="button"
       {...rest}
       className={clsx(
-        "inline-flex items-center justify-center gap-1.5 rounded-[var(--radius-control)]",
+        "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-[var(--radius-control)]",
         "font-medium whitespace-nowrap transition-colors duration-150",
         "disabled:pointer-events-none disabled:opacity-40",
         size === "sm" ? "h-7 px-2.5 text-[12px]" : "h-8 px-3 text-[13px]",

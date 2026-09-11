@@ -56,7 +56,8 @@ export interface DownloadItem {
   sequence: number;
   startedAt: number | null;
   completedAt: number | null;
-  elapsedSecs: number;
+  /** Milliseconds spent transferring. */
+  elapsedMs: number;
 }
 
 export interface RemoteInfo {

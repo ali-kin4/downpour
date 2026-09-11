@@ -14,7 +14,7 @@ use downpour_core::settings::Settings;
 use downpour_core::store::Store;
 use downpour_core::{Engine, EngineEvent};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1134,4 +1134,103 @@ async fn an_idle_engine_does_not_announce_a_drain() {
         }
     }
     assert!(!saw_drain, "an empty queue must never report draining");
+}
+
+// ---------------------------------------------------------------------------
+// First-run folder setup
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn first_run_creates_the_category_folders_once() {
+    let dir = TempDir::new();
+    let mut settings = Settings::default();
+    settings.download_dir = dir.0.clone();
+
+    let store = Store::open(&dir.join("downpour.db")).unwrap();
+    store.save_settings(&settings).unwrap();
+    let engine = Engine::with_store(store.clone()).unwrap();
+
+    let created = engine.run_first_run_setup().unwrap();
+    assert_eq!(created.len(), 6, "one folder per category");
+    for name in [
+        "Video",
+        "Music",
+        "Pictures",
+        "Documents",
+        "Compressed",
+        "Programs",
+    ] {
+        assert!(dir.join(name).is_dir(), "{name} was not created");
+    }
+
+    // Running again must be a no-op, so a folder the user deleted on purpose
+    // does not reappear on every launch.
+    std::fs::remove_dir_all(dir.join("Music")).unwrap();
+    let again = engine.run_first_run_setup().unwrap();
+    assert!(again.is_empty(), "setup must not run twice");
+    assert!(
+        !dir.join("Music").exists(),
+        "a deleted folder stays deleted"
+    );
+}
+
+#[tokio::test]
+async fn first_run_reuses_folders_that_already_exist() {
+    let dir = TempDir::new();
+    // A pre-existing Video folder with a file in it, as a returning IDM user
+    // would have.
+    std::fs::create_dir_all(dir.join("Video")).unwrap();
+    std::fs::write(dir.join("Video").join("existing.mp4"), b"keep me").unwrap();
+
+    let mut settings = Settings::default();
+    settings.download_dir = dir.0.clone();
+    let store = Store::open(&dir.join("downpour.db")).unwrap();
+    store.save_settings(&settings).unwrap();
+    let engine = Engine::with_store(store).unwrap();
+
+    let created = engine.run_first_run_setup().unwrap();
+    assert_eq!(
+        created.len(),
+        5,
+        "the existing folder is not reported as created"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("Video").join("existing.mp4")).unwrap(),
+        b"keep me",
+        "an existing folder must keep its contents"
+    );
+}
+
+#[tokio::test]
+async fn downloads_land_in_the_folder_for_their_file_type() {
+    let data = payload(64 * 1024);
+    let server = common::start(data).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.download_dir = dir.0.clone();
+    settings.sort_into_categories = true;
+    let engine = engine_with(settings);
+    engine.run_first_run_setup().unwrap();
+
+    // An empty dest_dir is the signal to route by category.
+    let mut s = spec(&server.url("/file"), &dir.0, "clip.mp4", StartMode::Start);
+    s.dest_dir = PathBuf::new();
+    let id = engine.add(s).unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "download did not finish"
+    );
+
+    assert!(
+        dir.join("Video").join("clip.mp4").exists(),
+        "an mp4 should land in Video, not the root; item said {:?}",
+        engine.get(&id).map(|i| i.dest_dir)
+    );
 }

@@ -96,7 +96,7 @@ impl Store {
                     sequence          INTEGER NOT NULL DEFAULT 0,
                     started_at        INTEGER,
                     completed_at      INTEGER,
-                    elapsed_secs      INTEGER NOT NULL DEFAULT 0
+                    elapsed_ms        INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_downloads_status  ON downloads(status);
                 CREATE INDEX IF NOT EXISTS idx_downloads_created ON downloads(created_at DESC);
@@ -125,7 +125,7 @@ impl Store {
                 dest_dir, headers, status,
                 total_bytes, downloaded_bytes, connections, supports_range,
                 category, source, scheduled, error, checksum,
-                created_at, sequence, started_at, completed_at, elapsed_secs
+                created_at, sequence, started_at, completed_at, elapsed_ms
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
                 ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
@@ -150,7 +150,7 @@ impl Store {
                 checksum = excluded.checksum,
                 started_at = excluded.started_at,
                 completed_at = excluded.completed_at,
-                elapsed_secs = excluded.elapsed_secs
+                elapsed_ms = excluded.elapsed_ms
             "#,
             params![
                 item.id,
@@ -175,7 +175,7 @@ impl Store {
                 item.sequence,
                 item.started_at,
                 item.completed_at,
-                item.elapsed_secs as i64,
+                item.elapsed_ms as i64,
             ],
         )?;
         Ok(())
@@ -189,7 +189,7 @@ impl Store {
                    dest_dir, headers, status,
                    total_bytes, downloaded_bytes, connections, supports_range,
                    category, source, scheduled, error, checksum,
-                   created_at, sequence, started_at, completed_at, elapsed_secs
+                   created_at, sequence, started_at, completed_at, elapsed_ms
             FROM downloads
             ORDER BY sequence ASC, created_at ASC
             "#,
@@ -226,7 +226,7 @@ impl Store {
                 sequence: row.get(19)?,
                 started_at: row.get(20)?,
                 completed_at: row.get(21)?,
-                elapsed_secs: row.get::<_, i64>(22)? as u64,
+                elapsed_ms: row.get::<_, i64>(22)? as u64,
             })
         })?;
 
@@ -280,6 +280,7 @@ impl Store {
             .optional()?;
         drop(conn);
 
+        let had_row = raw.is_some();
         let mut settings = match raw {
             // A settings blob that fails to parse must not stop the app from
             // starting; falling back to defaults is recoverable, refusing to
@@ -291,7 +292,37 @@ impl Store {
             None => Settings::default(),
         };
         settings.normalise();
+
+        // Persist the defaults the first time they are used.
+        //
+        // `Settings::default()` mints a fresh `rpc_token`. Without writing it
+        // down here, a user who never opens Settings gets a brand new token on
+        // every launch, and their paired browser extension silently starts
+        // failing with 401 after the first restart.
+        if !had_row {
+            self.save_settings(&settings)?;
+        }
         Ok(settings)
+    }
+
+    /// Reads a boolean flag from the key-value table.
+    pub fn flag(&self, key: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(raw.as_deref() == Some("1"))
+    }
+
+    pub fn set_flag(&self, key: &str, value: bool) -> Result<()> {
+        self.conn.lock().execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, if value { "1" } else { "0" }],
+        )?;
+        Ok(())
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
@@ -371,7 +402,7 @@ mod tests {
             sequence: 0,
             started_at: Some(1_700_000_010),
             completed_at: None,
-            elapsed_secs: 42,
+            elapsed_ms: 42_000,
         }
     }
 
@@ -458,6 +489,48 @@ mod tests {
         s.upsert(&item("a", DownloadStatus::Completed)).unwrap();
         assert!(s.delete_by_status(&[]).unwrap().is_empty());
         assert_eq!(s.load_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_first_load_writes_the_defaults_so_the_rpc_token_is_stable() {
+        let s = Store::open_in_memory().unwrap();
+        let first = s.load_settings().unwrap();
+        let second = s.load_settings().unwrap();
+        assert_eq!(
+            first.rpc_token, second.rpc_token,
+            "a token that changes between loads unpairs the browser extension"
+        );
+        assert_eq!(first.rpc_token.len(), 64);
+    }
+
+    #[test]
+    fn a_regenerated_token_survives_a_reload() {
+        let dir = std::env::temp_dir().join(format!("dp-tok-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("downpour.db");
+        let store = Store::open(&path).unwrap();
+        let mut settings = store.load_settings().unwrap();
+        let original = settings.rpc_token.clone();
+        settings.rpc_token = crate::settings::generate_token();
+        let replaced = settings.rpc_token.clone();
+        store.save_settings(&settings).unwrap();
+        drop(store);
+
+        let reopened = Store::open(&path).unwrap();
+        let back = reopened.load_settings().unwrap();
+        assert_eq!(back.rpc_token, replaced);
+        assert_ne!(back.rpc_token, original);
+        drop(reopened);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn flags_default_to_false_and_persist() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(!s.flag("first_run_done").unwrap());
+        s.set_flag("first_run_done", true).unwrap();
+        assert!(s.flag("first_run_done").unwrap());
+        s.set_flag("first_run_done", false).unwrap();
+        assert!(!s.flag("first_run_done").unwrap());
     }
 
     #[test]

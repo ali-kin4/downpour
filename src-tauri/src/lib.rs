@@ -74,6 +74,8 @@ pub fn run() {
             commands::abort_power_action,
             commands::read_text_file,
             commands::quit_app,
+            commands::category_folders,
+            commands::create_category_folders,
             commands::app_version,
         ])
         .run(tauri::generate_context!())
@@ -106,6 +108,18 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let engine = tauri::async_runtime::block_on(async { Engine::new(EngineConfig { db_path }) })?;
 
     app.manage(AppState::new(engine.clone()));
+
+    // Materialise the category folders on the very first launch, the way IDM
+    // does. Guarded internally so it runs once, reuses anything already there,
+    // and never fails startup.
+    match engine.run_first_run_setup() {
+        Ok(created) if !created.is_empty() => {
+            tracing::info!(count = created.len(), "created download category folders")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, "first-run folder setup failed"),
+    }
+
     state::spawn_event_bridge(handle.clone(), &engine);
     spawn_power_watcher(handle.clone(), &engine);
     tray::build(&handle)?;

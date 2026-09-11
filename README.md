@@ -122,20 +122,57 @@ Everything in this list is implemented today. Things that are not, are in
 
 - **Batch capture from pasted text.** Drop in a wall of text, a `.txt` file, or
   a clipboard full of links; Downpour extracts every http(s) URL, in the order
-  you wrote them, deduplicated, and it copes with links embedded in prose.
+  you wrote them, deduplicated, and it copes with links embedded in prose. The
+  count is shown before you commit, so a paste that only found three links out
+  of twenty cannot slip past you.
+- **Add without starting.** Queue twenty links now and start them tonight;
+  "not started" is a real state, not a paused download pretending.
+- **A browser extension** that captures downloads out of Chrome and hands them
+  over with their cookies attached. See [below](#browser-integration).
+
+**The app itself**
+
+- **Checks a link before adding it.** The New Download dialog probes as you
+  type and shows the real filename, the size, and whether the server will even
+  serve byte ranges — which is *why* a particular file ends up on one
+  connection instead of eight.
+- **Lives in the tray**, with a live tooltip and pause/resume, because a
+  downloader that quits when you close the window cannot honour a 2 a.m.
+  schedule.
+- **Desktop notifications** on completion and failure, and a completion dialog
+  with Open / Show in folder / Copy link when a single download finishes.
+- **When the queue finishes**: nothing, sleep, hibernate, shut down, or exit.
+  The destructive ones arm a 60-second countdown you can cancel, and they fire
+  only on the transition from busy to idle — opening the app with an empty
+  queue can never shut your machine down.
+- **A command palette** on `Ctrl K` for every action, plus a menu bar,
+  multi-select with bulk actions, sortable columns, and a right-click menu.
+- **Light and dark**, following Windows or pinned, with the Windows 11 Mica
+  backdrop on the window chrome.
 
 **Files**
 
 - **Sensible filenames.** `Content-Disposition` beats the URL path, which beats a
   fallback, and the result is sanitised for Windows' naming rules.
-- **Optional sorting into category folders** — Video, Audio, Documents,
-  Archives, Programs, Images — with editable extension lists.
+- **Sorting into category folders**, on by default, the way IDM does it:
+  `Video`, `Music`, `Pictures`, `Documents`, `Compressed`, `Programs`. They are
+  created inside your download folder on the **first run only** — folders you
+  already have are reused and never touched, and one you delete on purpose does
+  not come back on the next launch. Each folder and its extension list is
+  editable, and the whole thing can be switched off.
 - **Conflict policy** per your preference: rename to `file (1).zip`, overwrite,
   or skip.
 
 ## Browser integration
 
-The contract browser integration is built on is specified and frozen in
+**Included** in [`extension/`](extension/) as an unpacked Manifest V3
+extension: load it in Chrome, paste the pairing token from
+**Settings → Browser**, and downloads are handed to Downpour instead of the
+browser. If Downpour is not running, the browser download proceeds normally —
+the extension only cancels it *after* the hand-over is accepted, so closing the
+app can never cost you a file.
+
+The contract it is built on is specified and frozen in
 [`docs/rpc-protocol.md`](docs/rpc-protocol.md): HTTP on `127.0.0.1` only — never
 `0.0.0.0` — with every endpoint but `/health` requiring a 64-character token you
 pair once.
@@ -185,8 +222,11 @@ of a date.
   "YouTube downloader" — it is a download manager that can hand a URL to a tool
   you already have.
 - Command-line interface (the `downpour-cli` crate is currently a stub).
+- Clipboard monitoring (the settings exist; nothing reads them yet).
 - Per-download bandwidth limits.
-- Torrent support is **not** planned.
+- Torrent and magnet links are **not** supported and are not planned. Downpour
+  is an HTTP(S) download manager; BitTorrent is a different protocol and a
+  different program.
 
 ## Build from source
 

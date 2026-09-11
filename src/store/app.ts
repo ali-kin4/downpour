@@ -52,6 +52,13 @@ interface AppState {
   lastClicked: DownloadId | null;
 
   // --- overlays ---
+  /**
+   * The download to celebrate, or null.
+   *
+   * Set only when a lone download finishes with nothing else in flight; a
+   * modal per file during a twenty-item batch would be unusable.
+   */
+  justFinished: DownloadItem | null;
   addOpen: boolean;
   pasteOpen: boolean;
   settingsOpen: boolean;
@@ -77,6 +84,7 @@ interface AppState {
   setPasteOpen: (v: boolean) => void;
   setSettingsOpen: (v: boolean) => void;
   setPaletteOpen: (v: boolean) => void;
+  dismissFinished: () => void;
 
   toast: (t: Omit<Toast, "id">) => void;
   dismissToast: (id: number) => void;
@@ -108,6 +116,7 @@ export const useApp = create<AppState>((set, get) => ({
   selection: new Set(),
   lastClicked: null,
 
+  justFinished: null,
   addOpen: false,
   pasteOpen: false,
   settingsOpen: false,
@@ -175,17 +184,33 @@ export const useApp = create<AppState>((set, get) => ({
       case "completed": {
         const current = get().items[event.id];
         if (!current) break;
+        const finished: DownloadItem = {
+          ...current,
+          status: "completed",
+          speedBps: 0,
+          etaSecs: null,
+          downloadedBytes: current.totalBytes ?? current.downloadedBytes,
+        };
+        const items = { ...get().items, [event.id]: finished };
+
+        // Celebrate only a lone download. If anything else is still moving or
+        // waiting, this was part of a batch and a modal would be in the way.
+        const othersBusy = Object.values(items).some(
+          (i) =>
+            i.id !== event.id &&
+            (i.status === "running" ||
+              i.status === "probing" ||
+              i.status === "queued" ||
+              i.status === "scheduled"),
+        );
+        // A modal behind a hidden window helps nobody; the desktop
+        // notification has already done the job.
+        const visible =
+          typeof document === "undefined" || document.visibilityState === "visible";
+
         set({
-          items: {
-            ...get().items,
-            [event.id]: {
-              ...current,
-              status: "completed",
-              speedBps: 0,
-              etaSecs: null,
-              downloadedBytes: current.totalBytes ?? current.downloadedBytes,
-            },
-          },
+          items,
+          justFinished: !othersBusy && visible ? finished : get().justFinished,
         });
         break;
       }
@@ -205,7 +230,12 @@ export const useApp = create<AppState>((set, get) => ({
         delete items[event.id];
         const selection = new Set(get().selection);
         selection.delete(event.id);
-        set({ items, order: sortByRecency(items), selection });
+        set({
+          items,
+          order: sortByRecency(items),
+          selection,
+          justFinished: get().justFinished?.id === event.id ? null : get().justFinished,
+        });
         break;
       }
       case "schedulerWindow": {
@@ -323,6 +353,7 @@ export const useApp = create<AppState>((set, get) => ({
   setPasteOpen: (pasteOpen) => set({ pasteOpen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  dismissFinished: () => set({ justFinished: null }),
 
   toast(t) {
     const id = ++toastSeq;

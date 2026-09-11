@@ -390,6 +390,53 @@ pub fn abort_power_action() {
     crate::power::abort_shutdown();
 }
 
+/// The folder each file type is routed into, for the Settings screen.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryFolder {
+    pub name: String,
+    pub icon: String,
+    pub path: PathBuf,
+    pub exists: bool,
+    pub extensions: Vec<String>,
+}
+
+#[tauri::command]
+pub fn category_folders(state: State<'_, AppState>) -> Vec<CategoryFolder> {
+    let s = state.engine.settings();
+    s.categories
+        .iter()
+        .map(|c| {
+            let path = if c.folder.trim().is_empty() {
+                s.download_dir.clone()
+            } else {
+                s.download_dir.join(&c.folder)
+            };
+            CategoryFolder {
+                name: c.name.clone(),
+                icon: c.icon.clone(),
+                exists: path.is_dir(),
+                path,
+                extensions: c.extensions.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Creates any category folder that is missing, on demand from Settings.
+#[tauri::command]
+pub fn create_category_folders(state: State<'_, AppState>) -> CmdResult<usize> {
+    let s = state.engine.settings();
+    let mut made = 0;
+    for folder in s.category_folders() {
+        if !folder.is_dir() {
+            std::fs::create_dir_all(&folder).map_err(err)?;
+            made += 1;
+        }
+    }
+    Ok(made)
+}
+
 #[tauri::command]
 pub fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()

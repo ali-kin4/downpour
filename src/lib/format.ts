@@ -45,6 +45,19 @@ export function formatDuration(secs: number | null | undefined): string {
   return `${s}s`;
 }
 
+/**
+ * Duration from milliseconds, with sub-second resolution.
+ *
+ * A download that finished in 400ms should say so rather than reporting "0s",
+ * which reads as "something went wrong".
+ */
+export function formatDurationMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "—";
+  if (ms < 1000) return `${Math.max(1, Math.round(ms))} ms`;
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  return formatDuration(ms / 1000);
+}
+
 /** `02:00` from minutes since midnight. */
 export function formatMinuteOfDay(m: number): string {
   const h = Math.floor(m / 60) % 24;

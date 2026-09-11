@@ -56,7 +56,7 @@ export function AddDialog() {
     if (!open) return;
     setUrl("");
     setFilename("");
-    setDestDir(settings?.downloadDir ?? "");
+    setDestDir("");
     setStartMode(settings?.scheduleNewDownloads ? "schedule" : "start");
     setConnections("");
     setHeadersText("");
@@ -191,11 +191,23 @@ export function AddDialog() {
             />
           </Field>
 
-          <Field label="Folder">
+          <Field
+            label="Folder"
+            hint={
+              settings?.sortIntoCategories && !destDir
+                ? "Sorted automatically by file type."
+                : undefined
+            }
+          >
             <div className="flex gap-1.5">
               <TextInput
                 value={destDir}
                 onChange={(e) => setDestDir(e.target.value)}
+                placeholder={
+                  settings?.sortIntoCategories
+                    ? "Automatic (by file type)"
+                    : (settings?.downloadDir ?? "")
+                }
                 spellCheck={false}
               />
               <Button

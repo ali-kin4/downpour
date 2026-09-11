@@ -105,6 +105,20 @@ export const readTextFile = (path: string) => call<string>("read_text_file", { p
 export const quitApp = () => call<void>("quit_app");
 export const abortPowerAction = () => call<void>("abort_power_action");
 
+// -- Category folders -------------------------------------------------------
+
+export interface CategoryFolderInfo {
+  name: string;
+  icon: string;
+  path: string;
+  exists: boolean;
+  extensions: string[];
+}
+
+export const categoryFolders = () => call<CategoryFolderInfo[]>("category_folders");
+/** Creates any missing category folder; returns how many were made. */
+export const createCategoryFolders = () => call<number>("create_category_folders");
+
 // -- Browser integration ----------------------------------------------------
 
 export const getRpcInfo = () => call<RpcInfo>("get_rpc_info");

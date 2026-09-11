@@ -274,7 +274,7 @@ impl Engine {
                 sequence: self.inner.next_sequence.fetch_add(1, Ordering::SeqCst),
                 started_at: None,
                 completed_at: None,
-                elapsed_secs: 0,
+                elapsed_ms: 0,
             };
 
             self.inner.store.upsert(&item)?;
@@ -775,7 +775,7 @@ impl Engine {
             item.speed_bps = speed;
             item.eta_secs = eta;
             item.connections = connections.max(1);
-            item.elapsed_secs = run.started_at.elapsed().as_secs();
+            item.elapsed_ms = run.started_at.elapsed().as_millis() as u64;
             drop(items);
 
             self.emit(EngineEvent::Progress {
@@ -1091,7 +1091,7 @@ impl Engine {
             let mut items = self.inner.items.write();
             if let Some(i) = items.get_mut(id) {
                 i.downloaded_bytes = downloaded.max(i.downloaded_bytes);
-                i.elapsed_secs = run.started_at.elapsed().as_secs();
+                i.elapsed_ms = run.started_at.elapsed().as_millis() as u64;
             }
         }
         self.inner.running.write().remove(id);
@@ -1144,5 +1144,66 @@ impl Engine {
                 });
             }
         }
+    }
+}
+
+impl Engine {
+    /// One-time setup performed on the very first launch.
+    ///
+    /// Creates the category folders under the download directory, the way IDM
+    /// does, so a new user finds Video / Music / Pictures / Documents /
+    /// Compressed / Programs already waiting rather than one flat pile.
+    ///
+    /// Three properties matter and each is deliberate:
+    ///
+    /// - **Once, not every launch.** Guarded by a flag in the database. A user
+    ///   who deletes a folder they do not want should not find it recreated
+    ///   every time the app starts.
+    /// - **Reuse, never replace.** `create_dir_all` succeeds on an existing
+    ///   directory, so a folder the user already had keeps its contents.
+    /// - **Never fatal.** A read-only or redirected Downloads folder must not
+    ///   stop the app from opening; downloads simply land in the root.
+    ///
+    /// Returns the folders that did not previously exist, so the shell can say
+    /// what it created rather than doing it silently.
+    pub fn run_first_run_setup(&self) -> Result<Vec<PathBuf>> {
+        const FLAG: &str = "first_run_done";
+        if self.inner.store.flag(FLAG)? {
+            return Ok(Vec::new());
+        }
+
+        let settings = self.inner.settings.read().clone();
+        let mut created = Vec::new();
+
+        if let Err(e) = std::fs::create_dir_all(&settings.download_dir) {
+            tracing::warn!(
+                path = %settings.download_dir.display(),
+                error = %e,
+                "could not create the download folder; downloads will fail until it exists"
+            );
+            // Do not set the flag: the next launch should try again, because
+            // the folder may simply not have been mounted yet.
+            return Ok(Vec::new());
+        }
+
+        for folder in settings.category_folders() {
+            let existed = folder.is_dir();
+            match std::fs::create_dir_all(&folder) {
+                Ok(()) => {
+                    if !existed {
+                        created.push(folder);
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    path = %folder.display(),
+                    error = %e,
+                    "could not create category folder"
+                ),
+            }
+        }
+
+        self.inner.store.set_flag(FLAG, true)?;
+        tracing::info!(created = created.len(), "first-run folder setup complete");
+        Ok(created)
     }
 }

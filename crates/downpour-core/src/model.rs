@@ -225,8 +225,10 @@ pub struct DownloadItem {
     pub sequence: i64,
     pub started_at: Option<i64>,
     pub completed_at: Option<i64>,
-    /// Sum of active seconds, so the UI can show an honest average speed.
-    pub elapsed_secs: u64,
+    /// Milliseconds spent actually transferring, so the UI can show an honest
+    /// average speed. Seconds would report `0` for anything that finishes
+    /// quickly, which is precisely when the completion dialog appears.
+    pub elapsed_ms: u64,
 }
 
 impl DownloadItem {

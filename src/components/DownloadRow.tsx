@@ -14,14 +14,7 @@ import {
   ChevronsDown,
   Clock,
   Copy,
-  FileArchive,
-  FileAudio,
-  FileCode,
-  FileImage,
-  FileText,
-  FileVideo,
   Folder,
-  MonitorPlay,
   MoreHorizontal,
   Pause,
   Play,
@@ -33,8 +26,8 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "../lib/api";
+import { FileTile } from "../lib/filetypes";
 import {
-  fileExtension,
   formatBytes,
   formatDuration,
   formatRelative,
@@ -106,7 +99,7 @@ export function DownloadRow({ id }: { id: string }) {
 
         {/* Name */}
         <div className="flex min-w-0 items-center gap-2.5">
-          <FileGlyph filename={item.filename} status={item.status} />
+          <FileTile filename={item.filename} active={item.status === "running"} />
           <div className="min-w-0">
             <div className="truncate text-[12.5px] font-medium text-[var(--text-primary)]">
               {item.filename}
@@ -327,40 +320,6 @@ function StatusPill({ item }: { item: DownloadItem }) {
       <span className="truncate">{item.error ? "Failed" : meta.label}</span>
     </div>
   );
-}
-
-function FileGlyph({ filename, status }: { filename: string; status: DownloadStatus }) {
-  const ext = fileExtension(filename);
-  const Icon = glyphFor(ext);
-  return (
-    <div
-      className="grid size-8 shrink-0 place-items-center rounded-[8px]"
-      style={{
-        background:
-          status === "running"
-            ? "var(--accent-soft)"
-            : "color-mix(in srgb, var(--surface-sunken) 100%, transparent)",
-        color: status === "running" ? "var(--accent)" : "var(--text-tertiary)",
-      }}
-    >
-      <Icon size={15} />
-    </div>
-  );
-}
-
-function glyphFor(ext: string) {
-  if (["mp4", "mkv", "avi", "mov", "webm", "m4v", "flv", "wmv"].includes(ext))
-    return FileVideo;
-  if (["mp3", "flac", "wav", "aac", "ogg", "opus", "m4a"].includes(ext)) return FileAudio;
-  if (["zip", "rar", "7z", "tar", "gz", "xz", "iso", "zst"].includes(ext))
-    return FileArchive;
-  if (["jpg", "jpeg", "png", "gif", "webp", "svg", "avif", "bmp"].includes(ext))
-    return FileImage;
-  if (["exe", "msi", "appx", "msix", "deb", "rpm", "apk", "dmg"].includes(ext))
-    return MonitorPlay;
-  if (["json", "xml", "js", "ts", "html", "css", "py", "rs"].includes(ext))
-    return FileCode;
-  return FileText;
 }
 
 // ---------------------------------------------------------------------------

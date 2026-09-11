@@ -45,7 +45,7 @@ export function PasteDialog() {
     if (!open) return;
     setText("");
     setLinks([]);
-    setDestDir(settings?.downloadDir ?? "");
+    setDestDir("");
     setStartMode(settings?.scheduleNewDownloads ? "schedule" : "addonly");
 
     // Pre-fill from the clipboard when it looks like a link list.
@@ -193,6 +193,11 @@ ${contents}` : contents));
               <TextInput
                 value={destDir}
                 onChange={(e) => setDestDir(e.target.value)}
+                placeholder={
+                  settings?.sortIntoCategories
+                    ? "Automatic (by file type)"
+                    : (settings?.downloadDir ?? "")
+                }
                 spellCheck={false}
               />
               <Button

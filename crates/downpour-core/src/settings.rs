@@ -46,15 +46,25 @@ pub fn default_categories() -> Vec<Category> {
             "Video",
             &[
                 "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts",
-                "m2ts",
+                "m2ts", "vob", "ogv", "3gp", "rmvb", "divx", "mts",
             ],
         ),
         Category::new(
-            "Audio",
+            "Music",
             "music",
-            "Audio",
+            "Music",
             &[
-                "mp3", "flac", "wav", "aac", "ogg", "opus", "m4a", "wma", "alac", "aiff",
+                "mp3", "flac", "wav", "aac", "ogg", "opus", "m4a", "wma", "alac", "aiff", "ape",
+                "mid", "midi", "amr", "dsf",
+            ],
+        ),
+        Category::new(
+            "Pictures",
+            "image",
+            "Pictures",
+            &[
+                "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "tiff", "tif", "heic", "avif",
+                "raw", "cr2", "nef", "arw", "psd", "ai", "eps",
             ],
         ),
         Category::new(
@@ -62,16 +72,17 @@ pub fn default_categories() -> Vec<Category> {
             "file-text",
             "Documents",
             &[
-                "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "epub", "mobi",
-                "txt", "rtf", "csv",
+                "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "epub",
+                "mobi", "azw3", "djvu", "txt", "rtf", "csv", "tex", "md",
             ],
         ),
         Category::new(
-            "Archives",
+            "Compressed",
             "archive",
-            "Archives",
+            "Compressed",
             &[
-                "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst", "iso", "cab",
+                "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst", "iso", "cab", "tgz", "lz",
+                "lzma", "arj", "z", "dmg", "img", "wim",
             ],
         ),
         Category::new(
@@ -79,15 +90,21 @@ pub fn default_categories() -> Vec<Category> {
             "app-window",
             "Programs",
             &[
-                "exe", "msi", "msix", "appx", "dmg", "pkg", "deb", "rpm", "apk", "appimage",
-            ],
-        ),
-        Category::new(
-            "Images",
-            "image",
-            "Images",
-            &[
-                "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "tiff", "heic", "avif", "raw",
+                "exe",
+                "msi",
+                "msix",
+                "appx",
+                "appxbundle",
+                "bat",
+                "cmd",
+                "ps1",
+                "pkg",
+                "deb",
+                "rpm",
+                "apk",
+                "appimage",
+                "jar",
+                "run",
             ],
         ),
     ]
@@ -187,7 +204,7 @@ impl Default for Settings {
             scheduled_speed_limit_bps: 0,
             max_retries: 8,
             request_timeout_secs: 60,
-            sort_into_categories: false,
+            sort_into_categories: true,
             categories: default_categories(),
             conflict_policy: ConflictPolicy::default(),
             schedule: Schedule::default(),
@@ -282,6 +299,22 @@ impl Settings {
     }
 }
 
+impl Settings {
+    /// Every distinct subfolder the categories route into.
+    ///
+    /// Deduplicated and ordered, because two categories are allowed to share a
+    /// folder and we should not try to create it twice.
+    pub fn category_folders(&self) -> Vec<PathBuf> {
+        let mut seen = std::collections::BTreeSet::new();
+        self.categories
+            .iter()
+            .filter(|c| !c.folder.trim().is_empty())
+            .filter(|c| seen.insert(c.folder.clone()))
+            .map(|c| self.download_dir.join(&c.folder))
+            .collect()
+    }
+}
+
 /// Best guess at the user's Downloads folder, with a subfolder so Downpour
 /// never mixes its files in with the browser's.
 pub fn default_download_dir() -> PathBuf {
@@ -366,21 +399,58 @@ mod tests {
     }
 
     #[test]
-    fn category_lookup_is_off_unless_enabled() {
+    fn category_lookup_respects_the_master_switch() {
         let mut s = Settings::default();
-        assert!(s.category_for("movie.mp4").is_none());
-        s.sort_into_categories = true;
         assert_eq!(s.category_for("movie.mp4").unwrap().name, "Video");
-        assert_eq!(s.category_for("song.FLAC").unwrap().name, "Audio");
+        assert_eq!(s.category_for("song.FLAC").unwrap().name, "Music");
+        assert_eq!(s.category_for("photo.HEIC").unwrap().name, "Pictures");
+        assert_eq!(s.category_for("book.epub").unwrap().name, "Documents");
+        assert_eq!(s.category_for("pack.7z").unwrap().name, "Compressed");
+        assert_eq!(s.category_for("setup.msi").unwrap().name, "Programs");
         assert!(s.category_for("thing.qqq").is_none());
         assert!(s.category_for("noextension").is_none());
+
+        s.sort_into_categories = false;
+        assert!(s.category_for("movie.mp4").is_none());
+    }
+
+    #[test]
+    fn no_extension_belongs_to_two_categories() {
+        // A file landing in the wrong folder is confusing; a file that could
+        // land in either is a bug in the table, so assert the table is a
+        // partition rather than an overlapping set.
+        let s = Settings::default();
+        let mut seen = std::collections::HashMap::new();
+        for c in &s.categories {
+            for e in &c.extensions {
+                if let Some(other) = seen.insert(e.clone(), c.name.clone()) {
+                    panic!("`{e}` is in both {other} and {}", c.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn category_folders_are_the_ones_first_run_creates() {
+        let s = Settings::default();
+        let folders: Vec<&str> = s.categories.iter().map(|c| c.folder.as_str()).collect();
+        assert_eq!(
+            folders,
+            vec![
+                "Video",
+                "Music",
+                "Pictures",
+                "Documents",
+                "Compressed",
+                "Programs"
+            ]
+        );
     }
 
     #[test]
     fn dest_dir_appends_the_category_folder() {
         let mut s = Settings::default();
         s.download_dir = PathBuf::from("D:/dl");
-        s.sort_into_categories = true;
         assert_eq!(s.dest_dir_for("a.mp4"), PathBuf::from("D:/dl/Video"));
         assert_eq!(s.dest_dir_for("a.qqq"), PathBuf::from("D:/dl"));
         s.sort_into_categories = false;

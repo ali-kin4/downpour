@@ -206,17 +206,40 @@ export function ScheduleEditor({
     return () => window.clearInterval(id);
   }, []);
 
-  const setWindows = (windows: ScheduleWindow[]) => onChange({ ...schedule, windows });
+  // Edits are applied to the last schedule this component emitted, not to the
+  // last prop it received: a change only comes back as a prop after a round
+  // trip through the engine. Two edits inside one gesture — clicking a day
+  // toggle blurs the label input, which commits the label, and then the click
+  // lands — would otherwise see the same stale array and the first would be
+  // silently discarded.
+  const latest = useRef(schedule);
+  useEffect(() => {
+    latest.current = schedule;
+  }, [schedule]);
+
+  const setWindows = (windows: ScheduleWindow[]) => {
+    const next = { ...latest.current, windows };
+    latest.current = next;
+    onChange(next);
+  };
 
   const updateWindow = (id: string, patch: Partial<ScheduleWindow>) =>
-    setWindows(schedule.windows.map((w) => (w.id === id ? { ...w, ...patch } : w)));
+    setWindows(
+      latest.current.windows.map((w) => (w.id === id ? { ...w, ...patch } : w)),
+    );
 
   const removeWindow = (id: string) =>
-    setWindows(schedule.windows.filter((w) => w.id !== id));
+    setWindows(latest.current.windows.filter((w) => w.id !== id));
+
+  /** Flips one day bit, read from the latest mask so quick successive clicks compose. */
+  const toggleDay = (id: string, index: number) => {
+    const w = latest.current.windows.find((x) => x.id === id);
+    if (w) updateWindow(id, { days: w.days ^ (1 << index) });
+  };
 
   const addPreset = (p: Preset) =>
     setWindows([
-      ...schedule.windows,
+      ...latest.current.windows,
       {
         id: crypto.randomUUID(),
         label: p.label,
@@ -349,9 +372,7 @@ export function ScheduleEditor({
                           // which colour utility wins.
                           variant={on ? "primary" : "secondary"}
                           aria-pressed={on}
-                          onClick={() =>
-                            updateWindow(w.id, { days: w.days ^ (1 << i) })
-                          }
+                          onClick={() => toggleDay(w.id, i)}
                         >
                           {day}
                         </Button>
