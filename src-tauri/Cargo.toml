@@ -1,0 +1,44 @@
+[package]
+name = "downpour"
+description = "A fast, modern download manager for Windows."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+# Tauri v2 builds the app as a library so the same code can back the desktop
+# binary and, later, a mobile target.
+name = "downpour_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+downpour-core = { path = "../crates/downpour-core" }
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-os = "2"
+tauri-plugin-process = "2"
+tauri-plugin-single-instance = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+
+[target."cfg(windows)".dependencies]
+tauri-plugin-autostart = "2"
+
+[features]
+# Enabled by the Tauri CLI for `tauri dev`.
+custom-protocol = ["tauri/custom-protocol"]
