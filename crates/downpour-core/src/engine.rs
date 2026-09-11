@@ -1,0 +1,1014 @@
+//! The orchestrator: queue, concurrency cap, scheduler enforcement and events.
+//!
+//! Everything the UI can do goes through [`Engine`]. It owns the item list, the
+//! persistence store and the set of in-flight transfers, and it runs a single
+//! background "pump" that is the only place downloads are promoted or demoted.
+//! Concentrating every state transition in one loop is what keeps the
+//! concurrency cap honest: with transitions scattered across callbacks it is
+//! very easy to end up starting a fourth download while three are running.
+
+use crate::error::{Error, Result};
+use crate::model::{
+    DownloadId, DownloadItem, DownloadSpec, DownloadStatus, EngineEvent, StartMode,
+};
+use crate::naming;
+use crate::probe;
+use crate::resume::now_unix;
+use crate::scheduler::LocalMoment;
+use crate::settings::{ConflictPolicy, Settings};
+use crate::speed::SpeedTracker;
+use crate::store::Store;
+use crate::throttle::RateLimiter;
+use crate::transfer::{self, Control, TransferConfig, TransferContext, TransferProgress};
+use parking_lot::{Mutex, RwLock};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::broadcast;
+
+/// How often the pump promotes work and samples progress. 500ms is fast enough
+/// that the UI feels live and slow enough that it costs nothing.
+const PUMP_INTERVAL: Duration = Duration::from_millis(500);
+
+const EVENT_CAPACITY: usize = 4096;
+
+#[derive(Debug, Clone)]
+pub struct EngineConfig {
+    pub db_path: PathBuf,
+}
+
+/// Counts the UI shows in the sidebar and the tray tooltip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueueStats {
+    pub total: usize,
+    pub running: usize,
+    pub queued: usize,
+    pub scheduled: usize,
+    pub paused: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub idle: usize,
+    pub total_speed_bps: u64,
+    /// `None` when the scheduler is off entirely.
+    pub window_open: Option<bool>,
+    pub minutes_until_window: Option<u32>,
+}
+
+/// Outcome of resolving a download's on-disk name.
+enum Claim {
+    Named(String),
+    /// The file already existed and the conflict policy said to leave it alone.
+    SkippedExisting(PathBuf),
+}
+
+struct Running {
+    control: Control,
+    progress: Arc<TransferProgress>,
+    tracker: Mutex<SpeedTracker>,
+    started_at: std::time::Instant,
+}
+
+struct Inner {
+    store: Store,
+    settings: RwLock<Settings>,
+    client: RwLock<reqwest::Client>,
+    items: RwLock<HashMap<DownloadId, DownloadItem>>,
+    running: RwLock<HashMap<DownloadId, Arc<Running>>>,
+    limiter: RateLimiter,
+    events: broadcast::Sender<EngineEvent>,
+    shutdown: AtomicBool,
+    /// Last known scheduler state, so window transitions are only announced
+    /// once rather than twice a second.
+    last_window_open: Mutex<Option<bool>>,
+    /// Serialises filename resolution. Two downloads that resolve to the same
+    /// name must not both claim it: the first to finish renames its part file
+    /// away and the second fails with "file not found" halfway through.
+    name_lock: Mutex<()>,
+    /// Hands out the next queue position. Seeded past whatever is already in
+    /// the database so a restart does not reuse positions.
+    next_sequence: AtomicI64,
+}
+
+/// Handle to the download engine. Cheap to clone; all clones share one queue.
+#[derive(Clone)]
+pub struct Engine {
+    inner: Arc<Inner>,
+}
+
+impl Engine {
+    pub fn new(config: EngineConfig) -> Result<Self> {
+        let store = Store::open(&config.db_path)?;
+        Self::with_store(store)
+    }
+
+    /// Builds an engine over an existing store. The integration tests use an
+    /// in-memory store here, which is why this is public.
+    pub fn with_store(store: Store) -> Result<Self> {
+        let settings = store.load_settings()?;
+        let client = transfer::build_client(
+            &settings.user_agent,
+            Duration::from_secs(settings.request_timeout_secs),
+        )?;
+
+        let loaded = store.load_all()?;
+        let next_sequence = loaded.iter().map(|i| i.sequence).max().unwrap_or(0) + 1;
+        let items: HashMap<DownloadId, DownloadItem> = loaded
+            .into_iter()
+            .map(|i| (i.id.clone(), i))
+            .collect();
+
+        let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let limiter = RateLimiter::new(settings.speed_limit_bps);
+
+        let inner = Arc::new(Inner {
+            store,
+            settings: RwLock::new(settings),
+            client: RwLock::new(client),
+            items: RwLock::new(items),
+            running: RwLock::new(HashMap::new()),
+            limiter,
+            events,
+            shutdown: AtomicBool::new(false),
+            last_window_open: Mutex::new(None),
+            name_lock: Mutex::new(()),
+            next_sequence: AtomicI64::new(next_sequence),
+        });
+
+        let engine = Engine { inner };
+        engine.spawn_pump();
+        Ok(engine)
+    }
+
+    // -- Observation -------------------------------------------------------
+
+    pub fn subscribe(&self) -> broadcast::Receiver<EngineEvent> {
+        self.inner.events.subscribe()
+    }
+
+    /// Newest first, which is how the UI lists them.
+    pub fn list(&self) -> Vec<DownloadItem> {
+        let mut v: Vec<DownloadItem> = self.inner.items.read().values().cloned().collect();
+        v.sort_by(|a, b| b.sequence.cmp(&a.sequence));
+        v
+    }
+
+    pub fn get(&self, id: &str) -> Option<DownloadItem> {
+        self.inner.items.read().get(id).cloned()
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.inner.settings.read().clone()
+    }
+
+    pub fn stats(&self) -> QueueStats {
+        let items = self.inner.items.read();
+        let mut s = QueueStats {
+            total: items.len(),
+            ..Default::default()
+        };
+        for i in items.values() {
+            match i.status {
+                DownloadStatus::Running | DownloadStatus::Probing => s.running += 1,
+                DownloadStatus::Queued => s.queued += 1,
+                DownloadStatus::Scheduled => s.scheduled += 1,
+                DownloadStatus::Paused => s.paused += 1,
+                DownloadStatus::Completed => s.completed += 1,
+                DownloadStatus::Failed => s.failed += 1,
+                DownloadStatus::Idle => s.idle += 1,
+                DownloadStatus::Cancelled => {}
+            }
+            s.total_speed_bps += i.speed_bps;
+        }
+        drop(items);
+
+        let settings = self.inner.settings.read();
+        if settings.schedule.enabled {
+            let now = LocalMoment::now();
+            s.window_open = Some(settings.schedule.open_window(now).is_some());
+            s.minutes_until_window = settings.schedule.minutes_until_next_open(now);
+        }
+        s
+    }
+
+    // -- Adding ------------------------------------------------------------
+
+    /// Adds one download. The filename shown immediately is derived from the
+    /// URL; it is corrected from `Content-Disposition` once the transfer probes.
+    pub fn add(&self, spec: DownloadSpec) -> Result<DownloadId> {
+        let mut ids = self.add_many(vec![spec])?;
+        ids.pop().ok_or_else(|| Error::Other("add produced no id".into()))
+    }
+
+    /// Adds a batch in one pass.
+    ///
+    /// This is the path the "paste 20 links" dialog, the `.txt` import and the
+    /// browser extension all use, so it must not fail the whole batch because
+    /// one URL is malformed: bad entries are skipped and the rest are added.
+    pub fn add_many(&self, specs: Vec<DownloadSpec>) -> Result<Vec<DownloadId>> {
+        let settings = self.inner.settings.read().clone();
+        let mut ids = Vec::with_capacity(specs.len());
+
+        for spec in specs {
+            let url = spec.url.trim().to_string();
+            let parsed = match url::Url::parse(&url) {
+                Ok(u) if matches!(u.scheme(), "http" | "https") => u,
+                _ => {
+                    tracing::warn!(url, "skipping unusable url in batch");
+                    continue;
+                }
+            };
+
+            let user_named = spec
+                .filename
+                .as_deref()
+                .and_then(naming::sanitize)
+                .is_some();
+            let filename = naming::derive(spec.filename.as_deref(), None, &parsed, None);
+            let dest_dir = if spec.dest_dir.as_os_str().is_empty() {
+                settings.dest_dir_for(&filename)
+            } else {
+                spec.dest_dir.clone()
+            };
+
+            let scheduled = matches!(spec.start_mode, StartMode::Schedule)
+                || (settings.schedule_new_downloads && settings.schedule.enabled);
+
+            let status = match spec.start_mode {
+                StartMode::AddOnly => DownloadStatus::Idle,
+                StartMode::Schedule => DownloadStatus::Scheduled,
+                StartMode::Start if scheduled => DownloadStatus::Scheduled,
+                StartMode::Start => DownloadStatus::Queued,
+            };
+
+            let item = DownloadItem {
+                id: uuid::Uuid::new_v4().to_string(),
+                url,
+                final_url: None,
+                filename,
+                user_named,
+                name_locked: false,
+                dest_dir,
+                headers: spec.headers,
+                status,
+                total_bytes: None,
+                downloaded_bytes: 0,
+                speed_bps: 0,
+                eta_secs: None,
+                connections: spec
+                    .connections
+                    .unwrap_or(settings.max_connections_per_download),
+                supports_range: false,
+                category: spec.category,
+                source: spec.source,
+                scheduled,
+                error: None,
+                checksum: spec.checksum,
+                created_at: now_unix(),
+                sequence: self.inner.next_sequence.fetch_add(1, Ordering::SeqCst),
+                started_at: None,
+                completed_at: None,
+                elapsed_secs: 0,
+            };
+
+            self.inner.store.upsert(&item)?;
+            ids.push(item.id.clone());
+            self.inner.items.write().insert(item.id.clone(), item.clone());
+            self.emit(EngineEvent::Added { item: Box::new(item) });
+        }
+
+        Ok(ids)
+    }
+
+    // -- Control -----------------------------------------------------------
+
+    /// Moves a download into the queue. The pump starts it when a slot frees up.
+    pub fn start(&self, id: &str) -> Result<()> {
+        let scheduled = {
+            let items = self.inner.items.read();
+            let item = items.get(id).ok_or_else(|| Error::NotFound(id.into()))?;
+            if item.status.is_active() || item.status == DownloadStatus::Queued {
+                return Ok(());
+            }
+            item.scheduled
+        };
+        let next = if scheduled && self.inner.settings.read().schedule.enabled {
+            DownloadStatus::Scheduled
+        } else {
+            DownloadStatus::Queued
+        };
+        self.set_status(id, next, None)
+    }
+
+    /// Starts a download right now, bypassing its scheduler gate.
+    ///
+    /// This is the "download this one anyway" action; it clears the item's
+    /// `scheduled` flag rather than disabling the whole schedule.
+    pub fn force_start(&self, id: &str) -> Result<()> {
+        {
+            let mut items = self.inner.items.write();
+            let item = items.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+            item.scheduled = false;
+        }
+        self.persist(id);
+        self.set_status(id, DownloadStatus::Queued, None)
+    }
+
+    pub fn pause(&self, id: &str) -> Result<()> {
+        if let Some(run) = self.inner.running.read().get(id) {
+            // The transfer task notices, flushes its sidecar and reports
+            // `Paused`, which is what actually writes the status.
+            run.control.pause();
+            return Ok(());
+        }
+        let status = self
+            .inner
+            .items
+            .read()
+            .get(id)
+            .map(|i| i.status)
+            .ok_or_else(|| Error::NotFound(id.into()))?;
+        if matches!(
+            status,
+            DownloadStatus::Queued | DownloadStatus::Scheduled | DownloadStatus::Idle
+        ) {
+            self.set_status(id, DownloadStatus::Paused, None)?;
+        }
+        Ok(())
+    }
+
+    pub fn cancel(&self, id: &str) -> Result<()> {
+        if let Some(run) = self.inner.running.read().get(id) {
+            run.control.cancel();
+        }
+        self.set_status(id, DownloadStatus::Cancelled, None)
+    }
+
+    /// Removes a download from the list, optionally deleting what it wrote.
+    pub fn remove(&self, id: &str, delete_files: bool) -> Result<()> {
+        if let Some(run) = self.inner.running.read().get(id) {
+            run.control.cancel();
+        }
+        let item = self.inner.items.write().remove(id);
+        self.inner.store.delete(id)?;
+
+        if let Some(item) = item {
+            if delete_files {
+                // Best effort: a file locked by a virus scanner must not turn
+                // "remove from list" into an error the user cannot clear.
+                let _ = std::fs::remove_file(item.part_path());
+                let _ = std::fs::remove_file(item.meta_path());
+                if item.status == DownloadStatus::Completed {
+                    let _ = std::fs::remove_file(item.target_path());
+                }
+            } else if item.status != DownloadStatus::Completed {
+                // An unfinished part file with no list entry is orphaned junk;
+                // the sidecar alone is worthless without it.
+                let _ = std::fs::remove_file(item.meta_path());
+                let _ = std::fs::remove_file(item.part_path());
+            }
+        }
+        self.emit(EngineEvent::Removed { id: id.to_string() });
+        Ok(())
+    }
+
+    // -- Bulk actions ------------------------------------------------------
+
+    pub fn pause_all(&self) -> Result<()> {
+        for id in self.ids_matching(|s| {
+            s.is_active() || matches!(s, DownloadStatus::Queued | DownloadStatus::Scheduled)
+        }) {
+            self.pause(&id)?;
+        }
+        Ok(())
+    }
+
+    pub fn resume_all(&self) -> Result<()> {
+        for id in self.ids_matching(|s| matches!(s, DownloadStatus::Paused | DownloadStatus::Idle))
+        {
+            self.start(&id)?;
+        }
+        Ok(())
+    }
+
+    /// Re-queues everything that failed. The transfer resumes from its sidecar
+    /// where one survives, so a retry after a dropped connection does not
+    /// restart from zero.
+    pub fn retry_failed(&self) -> Result<usize> {
+        let ids = self.ids_matching(|s| s == DownloadStatus::Failed);
+        for id in &ids {
+            if let Some(item) = self.inner.items.write().get_mut(id) {
+                item.error = None;
+            }
+            self.start(id)?;
+        }
+        Ok(ids.len())
+    }
+
+    /// Clears finished rows from the list. Files on disk are untouched.
+    pub fn clear_completed(&self) -> Result<usize> {
+        self.clear_statuses(&[DownloadStatus::Completed])
+    }
+
+    /// Clears everything that will not run again: completed, failed, cancelled.
+    pub fn clear_finished(&self) -> Result<usize> {
+        self.clear_statuses(&[
+            DownloadStatus::Completed,
+            DownloadStatus::Failed,
+            DownloadStatus::Cancelled,
+        ])
+    }
+
+    fn clear_statuses(&self, statuses: &[DownloadStatus]) -> Result<usize> {
+        let removed = self.inner.store.delete_by_status(statuses)?;
+        let mut items = self.inner.items.write();
+        for id in &removed {
+            items.remove(id);
+        }
+        drop(items);
+        for id in &removed {
+            self.emit(EngineEvent::Removed { id: id.clone() });
+        }
+        Ok(removed.len())
+    }
+
+    /// Toggles the scheduler gate on one item.
+    pub fn set_scheduled(&self, id: &str, scheduled: bool) -> Result<()> {
+        {
+            let mut items = self.inner.items.write();
+            let item = items.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+            item.scheduled = scheduled;
+            // Move it to the matching waiting state so the change is visible
+            // immediately rather than at the next pump tick.
+            item.status = match (scheduled, item.status) {
+                (true, DownloadStatus::Queued) => DownloadStatus::Scheduled,
+                (false, DownloadStatus::Scheduled) => DownloadStatus::Queued,
+                (_, other) => other,
+            };
+        }
+        self.persist(id);
+        self.emit_status(id);
+        Ok(())
+    }
+
+    // -- Settings ----------------------------------------------------------
+
+    pub fn update_settings(&self, mut settings: Settings) -> Result<Settings> {
+        settings.normalise();
+
+        let rebuild_client = {
+            let current = self.inner.settings.read();
+            current.user_agent != settings.user_agent
+                || current.request_timeout_secs != settings.request_timeout_secs
+        };
+        if rebuild_client {
+            let client = transfer::build_client(
+                &settings.user_agent,
+                Duration::from_secs(settings.request_timeout_secs),
+            )?;
+            *self.inner.client.write() = client;
+        }
+
+        self.inner.store.save_settings(&settings)?;
+        // Applies live to in-flight transfers; no restart, no dropped download.
+        let inside = settings.schedule.enabled
+            && settings.schedule.open_window(LocalMoment::now()).is_some();
+        self.inner
+            .limiter
+            .set_rate(settings.effective_speed_limit(inside));
+        *self.inner.settings.write() = settings.clone();
+        Ok(settings)
+    }
+
+    // -- Lifecycle ---------------------------------------------------------
+
+    /// Pauses everything and stops the pump. Sidecars are flushed by the
+    /// transfer tasks as they wind down, so a later launch resumes cleanly.
+    pub async fn shutdown(&self) {
+        self.inner.shutdown.store(true, Ordering::SeqCst);
+        let running: Vec<Arc<Running>> = self.inner.running.read().values().cloned().collect();
+        for r in &running {
+            r.control.pause();
+        }
+        // Give the workers a moment to flush their sidecars. Waiting forever
+        // would hang the app on a wedged socket, so this is bounded.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !self.inner.running.read().is_empty() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    // -- Internals ---------------------------------------------------------
+
+    fn ids_matching(&self, pred: impl Fn(DownloadStatus) -> bool) -> Vec<DownloadId> {
+        let mut v: Vec<(i64, DownloadId)> = self
+            .inner
+            .items
+            .read()
+            .values()
+            .filter(|i| pred(i.status))
+            .map(|i| (i.sequence, i.id.clone()))
+            .collect();
+        v.sort();
+        v.into_iter().map(|(_, id)| id).collect()
+    }
+
+    fn emit(&self, event: EngineEvent) {
+        // A send error only means nobody is listening, which is normal for a
+        // headless run.
+        let _ = self.inner.events.send(event);
+    }
+
+    fn emit_status(&self, id: &str) {
+        if let Some(item) = self.inner.items.read().get(id) {
+            let _ = self.inner.events.send(EngineEvent::StatusChanged {
+                id: id.to_string(),
+                status: item.status,
+                error: item.error.clone(),
+            });
+        }
+    }
+
+    fn persist(&self, id: &str) {
+        let item = self.inner.items.read().get(id).cloned();
+        if let Some(item) = item {
+            if let Err(e) = self.inner.store.upsert(&item) {
+                tracing::error!(error = %e, id, "failed to persist download");
+            }
+        }
+    }
+
+    fn set_status(&self, id: &str, status: DownloadStatus, error: Option<String>) -> Result<()> {
+        {
+            let mut items = self.inner.items.write();
+            let item = items.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+            item.status = status;
+            item.error = error;
+            if !status.is_active() {
+                item.speed_bps = 0;
+                item.eta_secs = None;
+            }
+            if status == DownloadStatus::Completed {
+                item.completed_at = Some(now_unix());
+            }
+        }
+        self.persist(id);
+        self.emit_status(id);
+        Ok(())
+    }
+
+    fn spawn_pump(&self) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(PUMP_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if engine.inner.shutdown.load(Ordering::Relaxed) {
+                    break;
+                }
+                engine.pump_once();
+            }
+        });
+    }
+
+    /// One pass of the state machine. Split out from the loop so tests can
+    /// drive it deterministically instead of sleeping.
+    pub fn pump_once(&self) {
+        let settings = self.inner.settings.read().clone();
+        let now = LocalMoment::now();
+        let schedule_active = settings.schedule.enabled;
+        let window_open = !schedule_active || settings.schedule.open_window(now).is_some();
+
+        self.announce_window_changes(&settings, schedule_active, window_open, now);
+        self.sample_progress();
+
+        if schedule_active && !window_open && settings.pause_outside_window {
+            self.pause_scheduled_transfers();
+        }
+
+        self.promote_waiting(schedule_active, window_open);
+        self.fill_free_slots(&settings, window_open);
+    }
+
+    fn announce_window_changes(
+        &self,
+        settings: &Settings,
+        schedule_active: bool,
+        window_open: bool,
+        now: LocalMoment,
+    ) {
+        let observed = if schedule_active { Some(window_open) } else { None };
+        let mut last = self.inner.last_window_open.lock();
+        if *last == observed {
+            return;
+        }
+        *last = observed;
+        drop(last);
+
+        if let Some(open) = observed {
+            let label = settings
+                .schedule
+                .open_window(now)
+                .map(|w| {
+                    w.label
+                        .clone()
+                        .unwrap_or_else(|| format!("{}-{}", w.format_start(), w.format_end()))
+                });
+            // The limit can differ inside a window, so re-apply it on every
+            // transition rather than only when settings change.
+            self.inner
+                .limiter
+                .set_rate(settings.effective_speed_limit(open));
+            self.emit(EngineEvent::SchedulerWindow { open, label });
+        }
+    }
+
+    /// Reads the live counters of every in-flight transfer and publishes them.
+    fn sample_progress(&self) {
+        let running: Vec<(DownloadId, Arc<Running>)> = self
+            .inner
+            .running
+            .read()
+            .iter()
+            .map(|(k, v)| (k.clone(), Arc::clone(v)))
+            .collect();
+
+        for (id, run) in running {
+            let downloaded = run.progress.downloaded.load(Ordering::Relaxed);
+            let total = match run.progress.total.load(Ordering::Relaxed) {
+                0 => None,
+                v => Some(v),
+            };
+            let connections = run.progress.active_connections.load(Ordering::Relaxed) as u8;
+            let (speed, eta) = {
+                let mut tracker = run.tracker.lock();
+                let speed = tracker.sample(downloaded);
+                (speed, tracker.eta_secs(downloaded, total))
+            };
+
+            let mut items = self.inner.items.write();
+            let Some(item) = items.get_mut(&id) else { continue };
+            item.downloaded_bytes = downloaded;
+            item.total_bytes = total.or(item.total_bytes);
+            item.speed_bps = speed;
+            item.eta_secs = eta;
+            item.connections = connections.max(1);
+            item.elapsed_secs = run.started_at.elapsed().as_secs();
+            drop(items);
+
+            self.emit(EngineEvent::Progress {
+                id,
+                downloaded_bytes: downloaded,
+                total_bytes: total,
+                speed_bps: speed,
+                eta_secs: eta,
+                connections: connections.max(1),
+            });
+        }
+    }
+
+    /// Stops transfers that are only allowed to run inside a window, now that
+    /// the window has closed. They come back as `Scheduled`, not `Paused`, so
+    /// the next window picks them up without the user doing anything.
+    fn pause_scheduled_transfers(&self) {
+        let ids: Vec<DownloadId> = self
+            .inner
+            .items
+            .read()
+            .values()
+            .filter(|i| i.scheduled && i.status.is_active())
+            .map(|i| i.id.clone())
+            .collect();
+
+        for id in ids {
+            if let Some(run) = self.inner.running.read().get(&id) {
+                tracing::info!(id, "scheduler window closed; pausing");
+                run.control.pause();
+            }
+        }
+    }
+
+    /// Moves items between the two waiting states as the window opens and shuts.
+    fn promote_waiting(&self, schedule_active: bool, window_open: bool) {
+        let mut changed = Vec::new();
+        {
+            let mut items = self.inner.items.write();
+            for item in items.values_mut() {
+                let next = match item.status {
+                    DownloadStatus::Scheduled if !schedule_active || window_open => {
+                        Some(DownloadStatus::Queued)
+                    }
+                    DownloadStatus::Queued if schedule_active && !window_open && item.scheduled => {
+                        Some(DownloadStatus::Scheduled)
+                    }
+                    _ => None,
+                };
+                if let Some(next) = next {
+                    item.status = next;
+                    changed.push(item.id.clone());
+                }
+            }
+        }
+        for id in changed {
+            self.persist(&id);
+            self.emit_status(&id);
+        }
+    }
+
+    /// Starts queued downloads until the concurrency cap is reached.
+    fn fill_free_slots(&self, settings: &Settings, window_open: bool) {
+        if self.inner.shutdown.load(Ordering::Relaxed) {
+            return;
+        }
+        let cap = settings.max_concurrent_downloads.max(1) as usize;
+
+        loop {
+            let active = self
+                .inner
+                .items
+                .read()
+                .values()
+                .filter(|i| i.status.is_active())
+                .count();
+            if active >= cap {
+                return;
+            }
+
+            // Lowest sequence wins, so a batch downloads in the order it was
+            // pasted. Ordering by `created_at` would be non-deterministic:
+            // twenty links pasted at once all share the same second.
+            let next = {
+                let items = self.inner.items.read();
+                let mut candidates: Vec<&DownloadItem> = items
+                    .values()
+                    .filter(|i| i.status == DownloadStatus::Queued)
+                    .filter(|i| !i.scheduled || window_open)
+                    .collect();
+                candidates.sort_by_key(|i| i.sequence);
+                candidates.first().map(|i| i.id.clone())
+            };
+
+            let Some(id) = next else { return };
+            if let Err(e) = self.begin_transfer(&id, settings) {
+                tracing::error!(error = %e, id, "failed to start transfer");
+                let _ = self.set_status(&id, DownloadStatus::Failed, Some(e.to_string()));
+            }
+        }
+    }
+
+    fn begin_transfer(&self, id: &str, settings: &Settings) -> Result<()> {
+        let item = self
+            .inner
+            .items
+            .read()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(id.into()))?;
+
+        let control = Control::new();
+        let progress = Arc::new(TransferProgress::default());
+        let run = Arc::new(Running {
+            control: control.clone(),
+            progress: Arc::clone(&progress),
+            tracker: Mutex::new(SpeedTracker::new(item.downloaded_bytes)),
+            started_at: std::time::Instant::now(),
+        });
+        self.inner.running.write().insert(id.to_string(), Arc::clone(&run));
+
+        {
+            let mut items = self.inner.items.write();
+            if let Some(i) = items.get_mut(id) {
+                i.status = DownloadStatus::Probing;
+                i.error = None;
+                if i.started_at.is_none() {
+                    i.started_at = Some(now_unix());
+                }
+            }
+        }
+        self.persist(id);
+        self.emit_status(id);
+
+        let engine = self.clone();
+        let client = self.inner.client.read().clone();
+        let limiter = self.inner.limiter.clone();
+        let config = TransferConfig {
+            connections: item.connections.max(1),
+            max_retries: settings.max_retries,
+            min_steal_bytes: transfer::DEFAULT_MIN_STEAL_BYTES,
+            checksum: item.checksum.clone(),
+            request_timeout: Duration::from_secs(settings.request_timeout_secs),
+        };
+        let conflict = settings.conflict_policy;
+        let id_owned = id.to_string();
+
+        tokio::spawn(async move {
+            let ctx = TransferContext {
+                client,
+                headers: item.headers.clone(),
+                control,
+                limiter,
+                progress,
+            };
+            let outcome = engine.drive_transfer(&ctx, &item, &config, conflict).await;
+            engine.finish_transfer(&id_owned, outcome).await;
+        });
+
+        Ok(())
+    }
+
+    /// Probes, resolves the final filename, then runs the transfer.
+    ///
+    /// The probe happens here rather than inside the transfer so the engine can
+    /// correct the displayed filename from `Content-Disposition` and apply the
+    /// conflict policy before a single byte is written.
+    async fn drive_transfer(
+        &self,
+        ctx: &TransferContext,
+        item: &DownloadItem,
+        config: &TransferConfig,
+        conflict: ConflictPolicy,
+    ) -> Result<PathBuf> {
+        let remote = probe::probe(&ctx.client, &item.url, &ctx.headers).await?;
+
+        let parsed = url::Url::parse(&remote.final_url)
+            .or_else(|_| url::Url::parse(&item.url))
+            .map_err(|e| Error::InvalidUrl(e.to_string()))?;
+
+        tokio::fs::create_dir_all(&item.dest_dir)
+            .await
+            .map_err(|source| Error::Io { path: item.dest_dir.clone(), source })?;
+
+        let filename = match self.claim_filename(
+            item,
+            remote.suggested_filename.as_deref(),
+            &parsed,
+            remote.content_type.as_deref(),
+            conflict,
+        )? {
+            Claim::Named(name) => name,
+            Claim::SkippedExisting(path) => return Ok(path),
+        };
+
+        {
+            let mut items = self.inner.items.write();
+            if let Some(i) = items.get_mut(&item.id) {
+                i.filename = filename.clone();
+                i.name_locked = true;
+                i.final_url = Some(remote.final_url.clone());
+                i.total_bytes = remote.size;
+                i.supports_range = remote.supports_range;
+                i.status = DownloadStatus::Running;
+            }
+        }
+        self.persist(&item.id);
+        self.emit_status(&item.id);
+
+        let final_path = item.dest_dir.join(&filename);
+        let part_path = item.dest_dir.join(format!("{filename}.dpart"));
+        let meta_path = item.dest_dir.join(format!("{filename}.dpmeta"));
+
+        let outcome =
+            transfer::run_transfer(ctx, &remote, &final_path, &part_path, &meta_path, config)
+                .await?;
+        Ok(outcome.path)
+    }
+
+    /// Settles the on-disk name for a download and reserves it.
+    ///
+    /// Runs under `name_lock` and creates the part file before releasing it, so
+    /// two downloads started in the same tick cannot both decide they own
+    /// `setup.exe.dpart`; the first to finish would rename it away and the
+    /// second would fail mid-transfer. Once claimed, the item records
+    /// `name_locked` and every later attempt reuses the name verbatim -- without
+    /// that, a resume would deduplicate itself into a fresh name and restart
+    /// from zero every time.
+    fn claim_filename(
+        &self,
+        item: &DownloadItem,
+        content_disposition: Option<&str>,
+        url: &url::Url,
+        content_type: Option<&str>,
+        conflict: ConflictPolicy,
+    ) -> Result<Claim> {
+        if item.name_locked {
+            return Ok(Claim::Named(item.filename.clone()));
+        }
+
+        let _guard = self.inner.name_lock.lock();
+
+        // A user-chosen name is authoritative: the server does not get to
+        // rename a file the user explicitly asked to save as something else.
+        let desired = if item.user_named {
+            item.filename.clone()
+        } else {
+            naming::derive(None, content_disposition, url, content_type)
+        };
+
+        let target = item.dest_dir.join(&desired);
+        let part = item.dest_dir.join(format!("{desired}.dpart"));
+
+        let filename = if target.exists() {
+            match conflict {
+                ConflictPolicy::Skip => {
+                    tracing::info!(path = %target.display(), "file exists; skipping");
+                    return Ok(Claim::SkippedExisting(target));
+                }
+                ConflictPolicy::Overwrite => {
+                    let _ = std::fs::remove_file(&target);
+                    desired
+                }
+                ConflictPolicy::Rename => naming::deduplicate(&item.dest_dir, &desired),
+            }
+        } else if part.exists() {
+            // Another transfer is mid-flight on this name. `deduplicate` skips
+            // occupied files and occupied part files alike.
+            naming::deduplicate(&item.dest_dir, &desired)
+        } else {
+            desired
+        };
+
+        // Reserve it on disk before releasing the lock. `create_new` also
+        // covers the one race the lock cannot: another process writing into
+        // the same folder.
+        let claim_path = item.dest_dir.join(format!("{filename}.dpart"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&claim_path)
+        {
+            Ok(_) => Ok(Claim::Named(filename)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let fallback = naming::deduplicate(&item.dest_dir, &filename);
+                let path = item.dest_dir.join(format!("{fallback}.dpart"));
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(|source| Error::Io { path, source })?;
+                Ok(Claim::Named(fallback))
+            }
+            Err(source) => Err(Error::Io { path: claim_path, source }),
+        }
+    }
+
+    async fn finish_transfer(&self, id: &str, outcome: Result<PathBuf>) {
+        // Snapshot the final byte count before dropping the handle, or a
+        // completed download reports whatever the last 500ms sample happened
+        // to catch.
+        if let Some(run) = self.inner.running.read().get(id) {
+            let downloaded = run.progress.downloaded.load(Ordering::Relaxed);
+            let mut items = self.inner.items.write();
+            if let Some(i) = items.get_mut(id) {
+                i.downloaded_bytes = downloaded.max(i.downloaded_bytes);
+                i.elapsed_secs = run.started_at.elapsed().as_secs();
+            }
+        }
+        self.inner.running.write().remove(id);
+
+        match outcome {
+            Ok(path) => {
+                {
+                    let mut items = self.inner.items.write();
+                    if let Some(i) = items.get_mut(id) {
+                        if let Some(total) = i.total_bytes {
+                            i.downloaded_bytes = total;
+                        }
+                        i.speed_bps = 0;
+                        i.eta_secs = None;
+                    }
+                }
+                let _ = self.set_status(id, DownloadStatus::Completed, None);
+                self.emit(EngineEvent::Completed { id: id.to_string(), path });
+            }
+            Err(Error::Paused) => {
+                // Back to whichever waiting state it belongs in, so a window
+                // close does not look like a user pause.
+                let scheduled = self
+                    .inner
+                    .items
+                    .read()
+                    .get(id)
+                    .map(|i| i.scheduled)
+                    .unwrap_or(false);
+                let next = if scheduled && self.inner.settings.read().schedule.enabled {
+                    DownloadStatus::Scheduled
+                } else {
+                    DownloadStatus::Paused
+                };
+                let _ = self.set_status(id, next, None);
+            }
+            Err(Error::Cancelled) => {
+                let _ = self.set_status(id, DownloadStatus::Cancelled, None);
+            }
+            Err(e) => {
+                let message = e.to_string();
+                tracing::warn!(id, error = %message, "download failed");
+                let _ = self.set_status(id, DownloadStatus::Failed, Some(message.clone()));
+                self.emit(EngineEvent::Failed { id: id.to_string(), error: message });
+            }
+        }
+    }
+}

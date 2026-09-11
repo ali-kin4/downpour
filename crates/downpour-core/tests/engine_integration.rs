@@ -1,0 +1,802 @@
+//! Engine-level tests: the queue, the concurrency cap, bulk actions and the
+//! scheduler, driven against the same controllable HTTP server.
+
+mod common;
+
+use common::{payload, sha256, wait_for, TempDir};
+use downpour_core::model::{DownloadSpec, DownloadStatus, StartMode};
+use downpour_core::scheduler::{DaySet, LocalMoment, Schedule, ScheduleWindow};
+use downpour_core::settings::Settings;
+use downpour_core::store::Store;
+use downpour_core::{Engine, EngineEvent};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+fn engine_with(settings: Settings) -> Engine {
+    let store = Store::open_in_memory().unwrap();
+    store.save_settings(&settings).unwrap();
+    Engine::with_store(store).unwrap()
+}
+
+fn spec(url: &str, dir: &PathBuf, name: &str, mode: StartMode) -> DownloadSpec {
+    DownloadSpec {
+        url: url.to_string(),
+        headers: BTreeMap::new(),
+        filename: Some(name.to_string()),
+        dest_dir: dir.clone(),
+        connections: None,
+        category: None,
+        start_mode: mode,
+        checksum: None,
+        source: Some("test".into()),
+    }
+}
+
+/// A window that is guaranteed to be closed right now: it opens in an hour.
+fn closed_window() -> ScheduleWindow {
+    let now = LocalMoment::now().minute as u32;
+    let start = ((now + 60) % 1440) as u16;
+    let end = ((now + 120) % 1440) as u16;
+    let mut w = ScheduleWindow::new("later", start, end);
+    w.days = DaySet::ALL;
+    w
+}
+
+/// A window that is always open.
+fn open_window() -> ScheduleWindow {
+    ScheduleWindow::new("always", 0, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Queue and concurrency
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_download_added_and_started_completes_with_the_right_bytes() {
+    let data = payload(1024 * 1024);
+    let expected = sha256(&data);
+    let server = common::start(data).await;
+    let dir = TempDir::new();
+
+    let engine = engine_with(Settings::default());
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "one.bin", StartMode::Start))
+        .unwrap();
+
+    let e = engine.clone();
+    let done = wait_for(Duration::from_secs(30), move || {
+        e.get(&id).map(|i| i.status) == Some(DownloadStatus::Completed)
+    })
+    .await;
+    assert!(done, "download did not complete: {:?}", engine.list());
+
+    let item = &engine.list()[0];
+    assert_eq!(sha256(&std::fs::read(item.target_path()).unwrap()), expected);
+    assert_eq!(item.downloaded_bytes, item.total_bytes.unwrap());
+    assert!(item.error.is_none());
+}
+
+#[tokio::test]
+async fn add_only_downloads_nothing_until_asked() {
+    // This is the "paste 20 links but do not start yet" path.
+    let server = common::start(payload(512 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+
+    let specs: Vec<DownloadSpec> = (0..5)
+        .map(|i| {
+            spec(
+                &server.url("/file"),
+                &dir.0,
+                &format!("batch-{i}.bin"),
+                StartMode::AddOnly,
+            )
+        })
+        .collect();
+    let ids = engine.add_many(specs).unwrap();
+    assert_eq!(ids.len(), 5);
+
+    // Give the pump several ticks to prove it does not start them.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(
+        engine.list().iter().all(|i| i.status == DownloadStatus::Idle),
+        "idle items must not start on their own: {:?}",
+        engine.list().iter().map(|i| i.status).collect::<Vec<_>>()
+    );
+    assert_eq!(server.state.request_count(), 0, "no network traffic at all");
+
+    // Now start one of them.
+    engine.start(&ids[0]).unwrap();
+    let e = engine.clone();
+    let id0 = ids[0].clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&id0).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "explicitly started item never ran"
+    );
+    assert_eq!(
+        engine
+            .list()
+            .iter()
+            .filter(|i| i.status == DownloadStatus::Idle)
+            .count(),
+        4,
+        "starting one must not start the rest"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_of_malformed_urls_does_not_sink_the_good_ones() {
+    let server = common::start(payload(1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+
+    let specs = vec![
+        spec("not a url", &dir.0, "a.bin", StartMode::AddOnly),
+        spec(&server.url("/file"), &dir.0, "good.bin", StartMode::AddOnly),
+        spec("ftp://example.com/x", &dir.0, "b.bin", StartMode::AddOnly),
+        spec("magnet:?xt=urn:btih:abc", &dir.0, "c.bin", StartMode::AddOnly),
+    ];
+    let ids = engine.add_many(specs).unwrap();
+    assert_eq!(ids.len(), 1, "only the http url should be accepted");
+    assert_eq!(engine.list().len(), 1);
+}
+
+#[tokio::test]
+async fn the_concurrency_cap_is_never_exceeded() {
+    for cap in [1u8, 2, 3] {
+        let data = payload(3 * 1024 * 1024);
+        let server = common::start(data).await;
+        let dir = TempDir::new();
+
+        let mut settings = Settings::default();
+        settings.max_concurrent_downloads = cap;
+        // Slow every transfer down so overlap is observable rather than a race.
+        settings.speed_limit_bps = 4 * 1024 * 1024;
+        let engine = engine_with(settings);
+
+        let specs: Vec<DownloadSpec> = (0..8)
+            .map(|i| {
+                spec(
+                    &server.url("/file"),
+                    &dir.0,
+                    &format!("c{cap}-{i}.bin"),
+                    StartMode::Start,
+                )
+            })
+            .collect();
+        engine.add_many(specs).unwrap();
+
+        let peak = Arc::new(AtomicUsize::new(0));
+        let watcher = {
+            let engine = engine.clone();
+            let peak = Arc::clone(&peak);
+            tokio::spawn(async move {
+                for _ in 0..800 {
+                    let active = engine
+                        .list()
+                        .iter()
+                        .filter(|i| i.status.is_active())
+                        .count();
+                    peak.fetch_max(active, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                }
+            })
+        };
+
+        let e = engine.clone();
+        let all_done = wait_for(Duration::from_secs(90), move || {
+            e.list().iter().all(|i| i.status == DownloadStatus::Completed)
+        })
+        .await;
+        watcher.abort();
+
+        assert!(all_done, "cap={cap}: not everything finished: {:?}", engine.list());
+        let observed = peak.load(Ordering::SeqCst);
+        assert!(observed > 0, "cap={cap}: never saw anything running");
+        assert!(
+            observed <= cap as usize,
+            "cap={cap}: saw {observed} downloads running at once"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_queue_promotes_after_a_failure_not_just_after_a_success() {
+    // A queue that only advances on success deadlocks the moment one link is
+    // dead, which is exactly what happens with a pasted batch.
+    let server = common::start(payload(512 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.max_concurrent_downloads = 1;
+    settings.max_retries = 0;
+    let engine = engine_with(settings);
+
+    // A URL that will 404 on a server that is otherwise fine.
+    let bad = format!("{}/nope", server.base_url);
+    engine
+        .add(spec(&bad, &dir.0, "dead.bin", StartMode::Start))
+        .unwrap();
+    let good_id = engine
+        .add(spec(&server.url("/file"), &dir.0, "alive.bin", StartMode::Start))
+        .unwrap();
+
+    let e = engine.clone();
+    let promoted = wait_for(Duration::from_secs(30), move || {
+        e.get(&good_id).map(|i| i.status) == Some(DownloadStatus::Completed)
+    })
+    .await;
+    // Both items must reach a terminal state before counting failures.
+    let e = engine.clone();
+    wait_for(Duration::from_secs(20), move || {
+        e.list().iter().all(|i| i.status.is_terminal())
+    })
+    .await;
+
+    assert!(
+        promoted,
+        "the good download never ran behind the failing one: {:?}",
+        engine
+            .list()
+            .iter()
+            .map(|i| (i.filename.clone(), i.status, i.error.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        engine
+            .list()
+            .iter()
+            .filter(|i| i.status == DownloadStatus::Failed)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn downloads_start_in_the_order_they_were_added() {
+    let server = common::start(payload(256 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.max_concurrent_downloads = 1;
+    let engine = engine_with(settings);
+
+    let mut ids = Vec::new();
+    for i in 0..4 {
+        ids.push(
+            engine
+                .add(spec(&server.url("/file"), &dir.0, &format!("o{i}.bin"), StartMode::Start))
+                .unwrap(),
+        );
+        // No sleep: ordering comes from the insertion sequence, not the clock.
+        // If this test needed a delay, the queue order would be a coin flip for
+        // any batch added inside one second.
+    }
+
+    let mut rx = engine.subscribe();
+    let e = engine.clone();
+    assert!(
+        wait_for(Duration::from_secs(60), move || {
+            e.list().iter().all(|i| i.status.is_terminal())
+        })
+        .await
+    );
+    drop(rx.try_recv());
+
+    let mut by_start: Vec<_> = engine
+        .list()
+        .into_iter()
+        .filter_map(|i| i.started_at.map(|t| (t, i.filename)))
+        .collect();
+    by_start.sort();
+    let order: Vec<String> = by_start.into_iter().map(|(_, n)| n).collect();
+    assert_eq!(order, vec!["o0.bin", "o1.bin", "o2.bin", "o3.bin"]);
+}
+
+// ---------------------------------------------------------------------------
+// Pause, resume and bulk actions
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pause_then_resume_through_the_engine_completes_correctly() {
+    let data = payload(8 * 1024 * 1024);
+    let expected = sha256(&data);
+    let server = common::start(data.clone()).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.speed_limit_bps = 3 * 1024 * 1024;
+    let engine = engine_with(settings);
+
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "big.bin", StartMode::Start))
+        .unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.downloaded_bytes).unwrap_or(0) > 512 * 1024
+        })
+        .await,
+        "download never got going"
+    );
+
+    engine.pause(&id).unwrap();
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(15), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Paused)
+        })
+        .await,
+        "pause never took effect"
+    );
+
+    let mid = engine.get(&id).unwrap().downloaded_bytes;
+    assert!(mid > 0 && mid < data.len() as u64, "paused at {mid} bytes");
+
+    engine.start(&id).unwrap();
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(60), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "resume never completed"
+    );
+
+    let item = engine.get(&id).unwrap();
+    assert_eq!(sha256(&std::fs::read(item.target_path()).unwrap()), expected);
+}
+
+#[tokio::test]
+async fn pause_all_and_resume_all_cover_the_whole_queue() {
+    let server = common::start(payload(4 * 1024 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.speed_limit_bps = 2 * 1024 * 1024;
+    settings.max_concurrent_downloads = 2;
+    let engine = engine_with(settings);
+
+    for i in 0..5 {
+        engine
+            .add(spec(&server.url("/file"), &dir.0, &format!("p{i}.bin"), StartMode::Start))
+            .unwrap();
+    }
+
+    let e = engine.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.list().iter().any(|i| i.status.is_active())
+        })
+        .await
+    );
+
+    engine.pause_all().unwrap();
+    let e = engine.clone();
+    assert!(
+        wait_for(Duration::from_secs(20), move || {
+            e.list().iter().all(|i| i.status == DownloadStatus::Paused)
+        })
+        .await,
+        "pause_all left something running: {:?}",
+        engine.list().iter().map(|i| i.status).collect::<Vec<_>>()
+    );
+
+    engine.resume_all().unwrap();
+    let e = engine.clone();
+    assert!(
+        wait_for(Duration::from_secs(90), move || {
+            e.list().iter().all(|i| i.status == DownloadStatus::Completed)
+        })
+        .await,
+        "resume_all did not finish the queue"
+    );
+}
+
+#[tokio::test]
+async fn clear_completed_removes_only_finished_rows() {
+    let server = common::start(payload(128 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+
+    let done_id = engine
+        .add(spec(&server.url("/file"), &dir.0, "done.bin", StartMode::Start))
+        .unwrap();
+    let idle_id = engine
+        .add(spec(&server.url("/file"), &dir.0, "idle.bin", StartMode::AddOnly))
+        .unwrap();
+
+    let e = engine.clone();
+    let d = done_id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&d).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await
+    );
+
+    let cleared = engine.clear_completed().unwrap();
+    assert_eq!(cleared, 1);
+    assert!(engine.get(&done_id).is_none());
+    assert!(engine.get(&idle_id).is_some(), "unfinished rows must survive");
+
+    // The file itself is not touched by clearing the list.
+    assert!(dir.join("done.bin").exists(), "clearing the list must not delete files");
+}
+
+#[tokio::test]
+async fn retry_failed_requeues_everything_that_failed() {
+    let server = common::start(payload(64 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.max_retries = 0;
+    let engine = engine_with(settings);
+
+    let bad = format!("{}/nope", server.base_url);
+    for i in 0..3 {
+        engine
+            .add(spec(&bad, &dir.0, &format!("f{i}.bin"), StartMode::Start))
+            .unwrap();
+    }
+
+    let e = engine.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.list().iter().all(|i| i.status == DownloadStatus::Failed)
+        })
+        .await,
+        "expected all three to fail: {:?}",
+        engine.list().iter().map(|i| i.status).collect::<Vec<_>>()
+    );
+    assert!(engine.list().iter().all(|i| i.error.is_some()));
+
+    let retried = engine.retry_failed().unwrap();
+    assert_eq!(retried, 3);
+}
+
+#[tokio::test]
+async fn removing_a_download_deletes_its_part_and_sidecar() {
+    let data = payload(8 * 1024 * 1024);
+    let server = common::start(data).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.speed_limit_bps = 2 * 1024 * 1024;
+    let engine = engine_with(settings);
+
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "gone.bin", StartMode::Start))
+        .unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.downloaded_bytes).unwrap_or(0) > 256 * 1024
+        })
+        .await
+    );
+
+    engine.remove(&id, false).unwrap();
+    assert!(engine.get(&id).is_none());
+
+    // Give the cancelled transfer a moment to unwind before checking the disk.
+    assert!(
+        wait_for(Duration::from_secs(15), || {
+            !dir.join("gone.bin.dpart").exists() && !dir.join("gone.bin.dpmeta").exists()
+        })
+        .await,
+        "orphaned part or sidecar left behind"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_scheduled_download_waits_for_its_window() {
+    let server = common::start(payload(256 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.schedule = Schedule { enabled: true, windows: vec![closed_window()] };
+    let engine = engine_with(settings);
+
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "night.bin", StartMode::Schedule))
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(
+        engine.get(&id).unwrap().status,
+        DownloadStatus::Scheduled,
+        "must wait outside its window"
+    );
+    assert_eq!(server.state.request_count(), 0, "no traffic outside the window");
+}
+
+#[tokio::test]
+async fn a_scheduled_download_runs_once_the_window_opens() {
+    let server = common::start(payload(256 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.schedule = Schedule { enabled: true, windows: vec![closed_window()] };
+    let engine = engine_with(settings.clone());
+
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "night.bin", StartMode::Schedule))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(engine.get(&id).unwrap().status, DownloadStatus::Scheduled);
+
+    // The window opens (as it would at 02:00).
+    let mut opened = settings.clone();
+    opened.schedule = Schedule { enabled: true, windows: vec![open_window()] };
+    engine.update_settings(opened).unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "the window opened but nothing started: {:?}",
+        engine.get(&id).map(|i| i.status)
+    );
+}
+
+#[tokio::test]
+async fn closing_a_window_pauses_scheduled_downloads_back_to_scheduled() {
+    // The 02:00-07:00 use case: at 07:00 whatever is still running stops and
+    // waits for tomorrow, rather than running on through the working day.
+    let data = payload(16 * 1024 * 1024);
+    let server = common::start(data).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.speed_limit_bps = 2 * 1024 * 1024;
+    settings.pause_outside_window = true;
+    settings.schedule = Schedule { enabled: true, windows: vec![open_window()] };
+    let engine = engine_with(settings.clone());
+
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "overnight.bin", StartMode::Schedule))
+        .unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.downloaded_bytes).unwrap_or(0) > 512 * 1024
+        })
+        .await,
+        "download never started inside the open window"
+    );
+
+    // The window closes.
+    let mut closed = settings.clone();
+    closed.schedule = Schedule { enabled: true, windows: vec![closed_window()] };
+    engine.update_settings(closed).unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(20), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Scheduled)
+        })
+        .await,
+        "closing the window left the download at {:?}",
+        engine.get(&id).map(|i| i.status)
+    );
+
+    // Partial progress is kept for the next window.
+    let item = engine.get(&id).unwrap();
+    assert!(item.downloaded_bytes > 0);
+    assert!(dir.join("overnight.bin.dpmeta").exists(), "sidecar kept for the next window");
+}
+
+#[tokio::test]
+async fn an_unscheduled_download_ignores_a_closed_window() {
+    let server = common::start(payload(256 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.schedule = Schedule { enabled: true, windows: vec![closed_window()] };
+    let engine = engine_with(settings);
+
+    // StartMode::Start with schedule_new_downloads off means "not gated".
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "now.bin", StartMode::Start))
+        .unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "an ungated download must not be held by the scheduler"
+    );
+}
+
+#[tokio::test]
+async fn force_start_overrides_the_schedule_for_one_item_only() {
+    let server = common::start(payload(256 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.schedule = Schedule { enabled: true, windows: vec![closed_window()] };
+    let engine = engine_with(settings);
+
+    let a = engine
+        .add(spec(&server.url("/file"), &dir.0, "forced.bin", StartMode::Schedule))
+        .unwrap();
+    let b = engine
+        .add(spec(&server.url("/file"), &dir.0, "waiting.bin", StartMode::Schedule))
+        .unwrap();
+
+    engine.force_start(&a).unwrap();
+
+    let e = engine.clone();
+    let a2 = a.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&a2).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "force_start did not run the item"
+    );
+    assert_eq!(
+        engine.get(&b).unwrap().status,
+        DownloadStatus::Scheduled,
+        "the schedule must still hold for everything else"
+    );
+    assert!(engine.settings().schedule.enabled, "the schedule itself stays armed");
+}
+
+#[tokio::test]
+async fn schedule_new_downloads_gates_items_added_while_it_is_on() {
+    let server = common::start(payload(128 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.schedule = Schedule { enabled: true, windows: vec![closed_window()] };
+    settings.schedule_new_downloads = true;
+    let engine = engine_with(settings);
+
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "auto.bin", StartMode::Start))
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let item = engine.get(&id).unwrap();
+    assert!(item.scheduled, "new downloads must inherit the schedule gate");
+    assert_eq!(item.status, DownloadStatus::Scheduled);
+}
+
+// ---------------------------------------------------------------------------
+// Settings and events
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn changing_the_speed_limit_applies_without_restarting_downloads() {
+    let engine = engine_with(Settings::default());
+    let mut s = engine.settings();
+    assert_eq!(s.speed_limit_bps, 0);
+
+    s.speed_limit_bps = 1_500_000;
+    let saved = engine.update_settings(s).unwrap();
+    assert_eq!(saved.speed_limit_bps, 1_500_000);
+    assert_eq!(engine.settings().speed_limit_bps, 1_500_000);
+}
+
+#[tokio::test]
+async fn invalid_settings_are_clamped_rather_than_rejected() {
+    let engine = engine_with(Settings::default());
+    let mut s = engine.settings();
+    s.max_concurrent_downloads = 0;
+    s.max_connections_per_download = 250;
+    let saved = engine.update_settings(s).unwrap();
+    assert_eq!(saved.max_concurrent_downloads, 1);
+    assert_eq!(saved.max_connections_per_download, 32);
+}
+
+#[tokio::test]
+async fn the_engine_emits_events_for_the_whole_lifecycle() {
+    let server = common::start(payload(256 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+    let mut rx = engine.subscribe();
+
+    engine
+        .add(spec(&server.url("/file"), &dir.0, "ev.bin", StartMode::Start))
+        .unwrap();
+
+    let mut saw_added = false;
+    let mut saw_progress = false;
+    let mut saw_completed = false;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline && !saw_completed {
+        match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+            Ok(Ok(EngineEvent::Added { .. })) => saw_added = true,
+            Ok(Ok(EngineEvent::Progress { .. })) => saw_progress = true,
+            Ok(Ok(EngineEvent::Completed { .. })) => saw_completed = true,
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+
+    assert!(saw_added, "no Added event");
+    assert!(saw_completed, "no Completed event");
+    // Progress is sampled on a timer, so a very fast download may finish first;
+    // this is informational rather than a hard requirement.
+    let _ = saw_progress;
+}
+
+#[tokio::test]
+async fn stats_reflect_the_queue_contents() {
+    let server = common::start(payload(64 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+
+    for i in 0..3 {
+        engine
+            .add(spec(&server.url("/file"), &dir.0, &format!("s{i}.bin"), StartMode::AddOnly))
+            .unwrap();
+    }
+    let stats = engine.stats();
+    assert_eq!(stats.total, 3);
+    assert_eq!(stats.idle, 3);
+    assert_eq!(stats.running, 0);
+    assert_eq!(stats.window_open, None, "scheduler is off, so there is no window");
+}
+
+#[tokio::test]
+async fn stats_report_the_scheduler_state_when_it_is_armed() {
+    let mut settings = Settings::default();
+    settings.schedule = Schedule { enabled: true, windows: vec![closed_window()] };
+    let engine = engine_with(settings);
+
+    let stats = engine.stats();
+    assert_eq!(stats.window_open, Some(false));
+    let minutes = stats.minutes_until_window.expect("a closed window must know when it opens");
+    assert!((1..=120).contains(&minutes), "opens in {minutes} minutes");
+}
+
+#[tokio::test]
+async fn the_queue_survives_a_restart() {
+    let server = common::start(payload(64 * 1024)).await;
+    let dir = TempDir::new();
+    let db = dir.join("downpour.db");
+
+    let store = Store::open(&db).unwrap();
+    let engine = Engine::with_store(store).unwrap();
+    let id = engine
+        .add(spec(&server.url("/file"), &dir.0, "persist.bin", StartMode::AddOnly))
+        .unwrap();
+    engine.shutdown().await;
+    drop(engine);
+
+    // A fresh process opening the same database.
+    let store2 = Store::open(&db).unwrap();
+    let engine2 = Engine::with_store(store2).unwrap();
+    let item = engine2.get(&id).expect("download did not survive the restart");
+    assert_eq!(item.filename, "persist.bin");
+    assert_eq!(item.status, DownloadStatus::Idle);
+}
