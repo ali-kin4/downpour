@@ -17,6 +17,12 @@ use std::process::Command;
 /// cancel, short enough to be useful overnight.
 const GRACE_SECONDS: u32 = 60;
 
+/// Set by `abort_shutdown` so a pending hibernation can be called off.
+/// `shutdown /a` cancels the Windows-side countdown, but hibernation has no
+/// such countdown to cancel, so ours is tracked here.
+static HIBERNATE_CANCELLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub fn on_queue_drained(app: &tauri::AppHandle, action: OnQueueComplete, completed: usize) {
     if matches!(action, OnQueueComplete::Nothing) {
         return;
@@ -54,7 +60,19 @@ fn sleep() {
 
 #[cfg(windows)]
 fn hibernate() {
-    spawn_detached("shutdown", &["/h"]);
+    // `shutdown /h` is immediate and has no delay flag. Sleep does not need a
+    // countdown because moving the mouse undoes it; hibernation writes RAM to
+    // disk and takes a real wake cycle to come back from, so it gets the same
+    // grace period as a shutdown. The sleep runs on a detached task so the
+    // event loop is never blocked.
+    tauri::async_runtime::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(GRACE_SECONDS as u64)).await;
+        if HIBERNATE_CANCELLED.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            tracing::info!("hibernate cancelled before it fired");
+            return;
+        }
+        spawn_detached("shutdown", &["/h"]);
+    });
 }
 
 #[cfg(windows)]
@@ -75,6 +93,7 @@ fn shutdown() {
 /// Cancels a pending shutdown or hibernate countdown.
 #[cfg(windows)]
 pub fn abort_shutdown() {
+    HIBERNATE_CANCELLED.store(true, std::sync::atomic::Ordering::SeqCst);
     spawn_detached("shutdown", &["/a"]);
 }
 

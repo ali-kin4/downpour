@@ -22,7 +22,8 @@
           "effects": [
             "mica"
           ]
-        }
+        },
+        "dragDropEnabled": false
       }
     ],
     "security": {

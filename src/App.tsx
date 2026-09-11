@@ -3,6 +3,7 @@ import { AddDialog } from "./components/AddDialog";
 import { CommandPalette } from "./components/CommandPalette";
 import { CompletionDialog } from "./components/CompletionDialog";
 import { DownloadList } from "./components/DownloadList";
+import { DropZone } from "./components/DropZone";
 import { MenuBar } from "./components/MenuBar";
 import { PasteDialog } from "./components/PasteDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -106,6 +107,7 @@ export function App() {
       <SettingsDialog />
       <CommandPalette />
       <CompletionDialog />
+      <DropZone />
       <Toasts />
     </div>
   );

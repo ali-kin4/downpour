@@ -7,9 +7,170 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Segmented downloads now open real TCP connections again.** Over TLS, ALPN
+  negotiates HTTP/2 with essentially every CDN and release host, and `reqwest`
+  multiplexes every concurrent request to an origin onto a *single* TCP
+  connection. A sixteen-way segmented download was therefore opening sixteen
+  HTTP/2 *streams* inside one connection: sixteen sets of request overhead, all
+  of them inside the one per-connection shaping bucket that segmentation exists
+  to escape. It was also capped by hyper's 5 MiB HTTP/2 connection window —
+  roughly 420 Mbit/s at 100 ms RTT — regardless of how the file was split.
+
+  The engine's client is now built with `.http1_only()`, so each segment gets its
+  own socket, its own receive window, its own congestion window and its own slot
+  in the origin's per-connection limits. Nothing user-visible breaks when this
+  regresses — downloads just quietly get slower — so it is guarded by
+  `crates/downpour-core/tests/protocol_probe.rs`, which asserts `HTTP/1.1` on
+  every response from three real public hosts, including four concurrent ranged
+  requests to one origin. It needs the network, so it is `#[ignore]`d by default:
+  `cargo test -p downpour-core --test protocol_probe -- --ignored --nocapture`.
+
+  Full analysis, including the eight other throughput changes that were
+  investigated and mostly rejected, in `docs/research/throughput.md`.
+- Content encoding is now refused outright (`no_gzip`, `no_brotli`, `no_deflate`)
+  rather than relying on `reqwest` skipping it when a `Range` header is present.
+  Byte ranges are defined over the *encoded* representation, so a decoded body
+  makes the arithmetic a segmented download depends on ambiguous.
+
+### Changed
+
+- The per-download connection ceiling is **16**, down from 32. Beyond that point
+  extra connections stop buying throughput and start looking, to the server, like
+  something to rate-limit or ban. The default is still 8.
+
 ### Added
 
-- Nothing yet.
+**Desktop application**
+
+- The full application window: a virtualised download list with live search over
+  filename and URL, sortable columns, resizable columns that persist their widths
+  (double-click an edge to fit the content), multi-select with bulk
+  start/pause/remove/delete, and a per-row context menu.
+- A collapsible sidebar with live status counts, the six file-type categories,
+  scheduler state and the active speed limit.
+- A command palette on `Ctrl K` covering every global action and jump-to-download
+  by name or URL, plus a menu bar and shortcuts for new download, new batch,
+  settings and select-all.
+- A New Download dialog that probes the URL as you type and reports the real
+  filename, the size and whether the server serves byte ranges, with a save-as
+  path, a start mode and an advanced section for connections, custom request
+  headers and an expected SHA-256.
+- A batch dialog: paste text or import a `.txt`, with a debounced live count of
+  the links found — delegated to the engine's own extractor so the preview and
+  the queue can never disagree — a per-batch destination, and a start mode.
+- Duplicate detection on single adds. Before starting, a URL is checked against
+  the download history and the destination path, and one of four distinct panels
+  is shown: already in the list, downloaded before with the file present,
+  downloaded before with the file gone, or an unrelated file occupying the name.
+  Advisory only — every panel offers to continue. URLs are compared with the
+  query string and fragment stripped, because signed CDN links change every time.
+- A system tray icon with Open, Pause all, Resume all and Quit, and a tooltip
+  that updates every two seconds with what is running and how fast. Closing the
+  window minimises to the tray by default.
+- A compact, always-on-top progress panel that opens when a transfer starts —
+  driven by the event stream, so it appears for a download started from the tray,
+  the extension or a scheduler window opening at 2 a.m. — and closes itself once
+  the queue drains.
+- Desktop notifications on completion and failure, and a completion dialog with
+  Open, Show in folder and Copy link, shown only when nothing else is running and
+  the window is visible.
+- Post-queue actions: nothing, sleep, hibernate, shut down or exit, fired on the
+  busy-to-idle edge so an empty queue at launch can never trigger one. Shutdown
+  arms Windows' 60-second countdown, cancellable from Tools → Cancel pending
+  shutdown; sleep and hibernate take effect immediately.
+- Settings covering downloads, scheduling, notifications, browser integration and
+  appearance, applied immediately with no Save button, and with engine-clamped
+  values written back into the field so the clamp is visible.
+- A schedule editor for multiple named windows with per-day toggles, presets, and
+  open-now / next-open badges that mirror the engine's midnight-crossing
+  semantics exactly.
+- Light and dark themes following Windows or pinned, with the Windows 11 Mica
+  backdrop on the main window and opaque list rows so the grid stays legible over
+  it. Reduced-motion is honoured.
+- First-run setup: the download folder and its category subfolders are created
+  once, guarded by a database flag, reusing anything already present and never
+  failing startup. Settings can recreate any that are later removed.
+- NSIS installer hooks that create a desktop shortcut on install and, more
+  importantly, delete it on uninstall.
+
+**Browser extension**
+
+- A Manifest V3 extension for Chrome, Edge, Brave, Opera and Vivaldi that hands
+  browser downloads to the app with their `Cookie`, `Referer` and `User-Agent`
+  attached. The browser's own download is cancelled only *after* the app confirms
+  it accepted the hand-over, so closing the app can never cost a file.
+- A configurable bypass key (Alt by default) that lets a single download through
+  to the browser without turning capture off.
+- A link grabber: collects every anchor, image (including `srcset`), video and
+  audio source, `<embed>`, `<object>` and visible CSS background image on a page,
+  then opens a picker grouped by kind with filters by kind, extension and
+  text-or-regex, select-all-shown / invert / per-group selection, and a running
+  count. Nothing is queued until Send is pressed.
+- A right-click "Send selected links" that posts the raw selection to the app and
+  lets the app's extractor find the URLs, so there is exactly one extractor.
+- Per-site block and allow lists, honoured for both the file's host and the page
+  it came from, plus the app's own excluded-host list regardless of which rule
+  source is selected.
+
+**Media pages**
+
+- Optional support for video pages through yt-dlp, used as a *metadata source*
+  rather than as a downloader: the direct media URL and its required headers are
+  handed to Downpour's own segmented engine, so a video gets connections,
+  work-stealing, the queue, the scheduler and the speed limit like any other file.
+- yt-dlp is never bundled, vendored, mirrored or silently installed. It is
+  fetched only from the official GitHub releases API, only after an explicit
+  click on a button that names the tool, the source and the destination, and only
+  after the download is verified against the `SHA2-256SUMS` manifest from the
+  same release. A missing manifest or an unlisted asset fails the install rather
+  than skipping the check. It is written to a `.part` file and renamed into place
+  only once the hash matches, and it lives at one path that can be deleted to
+  uninstall it.
+- ffmpeg is never fetched. Muxing is therefore out of scope, so the quality
+  picker defaults to progressive formats — the ones that already contain audio —
+  with an All formats toggle and an explicit warning before a video-only or
+  audio-only stream can be chosen. Downpour never silently produces a file with
+  no sound.
+- `Accept-Encoding` and other hop-by-hop headers are stripped from the header set
+  yt-dlp reports, because a compressed body would make the engine's ranged byte
+  arithmetic ambiguous and write gzipped bytes to disk while reporting success.
+- Every yt-dlp invocation is async, spawned with `CREATE_NO_WINDOW`, passed
+  `--ignore-config`, bounded by a timeout with `kill_on_drop`, and reports the
+  tool's own stderr verbatim on failure rather than paraphrasing it away.
+
+**Documentation**
+
+- `docs/install.md`: the long-form install guide — requirements, the SmartScreen
+  walkthrough, every path the installer writes, silent-install flags, a clean
+  uninstall including what is deliberately left behind, and troubleshooting for
+  SmartScreen, antivirus false positives, the RPC port range being in use, and
+  corporate proxies.
+- `docs/research/throughput.md`: what actually makes an HTTP download faster,
+  with each finding marked as read-from-source, read-from-a-primary-document, or
+  unmeasured.
+- `docs/media.md`: the media-page design, its legal constraints, and its known
+  gaps.
+- `docs/images/README.md`: which screenshots the README needs, at what size.
+
+### Known limitations
+
+- The `downpour-cli` crate is still a stub: it declares a `downpour` binary whose
+  `main` is empty.
+- Clipboard monitoring is not implemented. The settings fields exist and nothing
+  reads them; what works is clipboard prefill in the two add dialogs.
+- Proxy configuration is read from the `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY`
+  / `NO_PROXY` environment variables only — Windows Internet Options, PAC scripts
+  and WPAD are not consulted.
+- TLS trust comes from the bundled Mozilla root store (`webpki-roots`), not the
+  Windows certificate store, so downloads fail with a certificate error behind a
+  TLS-inspecting corporate proxy whose private root CA is trusted by the browser.
+  There is no setting that changes this.
+- Media downloads hold a signed URL that expires in minutes to hours, so one left
+  paused or queued for too long fails with a `403` on resume and must be re-added
+  from the page.
+- The installers are not code-signed, which is why SmartScreen warns.
 
 ## [0.1.0] - 2026-09-11
 
@@ -52,8 +213,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   trailing sentence punctuation stripped and balanced parentheses kept.
 - Filename derivation with an explicit precedence (`Content-Disposition`, then
   the URL path, then a fallback) and sanitisation for Windows' naming rules.
-- Optional sorting into category folders (Video, Audio, Documents, Archives,
-  Programs, Images) with editable extension lists, and a conflict policy of
+- Optional sorting into category folders (Video, Music, Pictures, Documents,
+  Compressed, Programs) with editable extension lists, and a conflict policy of
   rename, overwrite or skip.
 - Exponential-moving-average speed and ETA estimation, smoothed by elapsed time
   rather than per tick so a late tick does not distort the figure.

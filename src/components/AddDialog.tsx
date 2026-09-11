@@ -274,12 +274,12 @@ export function AddDialog() {
           <div className="flex flex-col gap-3 rounded-[var(--radius-card)] border border-[var(--border-subtle)] bg-[var(--surface-sunken)] p-3">
             <Field
               label="Connections"
-              hint={`Blank uses the global default (${settings?.maxConnectionsPerDownload ?? 8}). More is not always faster; many servers throttle per connection.`}
+              hint={`Blank uses the global default (${settings?.maxConnectionsPerDownload ?? 8}). Capped at 16 — past that servers rate-limit rather than serve faster.`}
             >
               <TextInput
                 type="number"
                 min={1}
-                max={32}
+                max={16}
                 value={connections}
                 onChange={(e) =>
                   setConnections(e.target.value === "" ? "" : Number(e.target.value))
