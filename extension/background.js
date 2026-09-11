@@ -41,10 +41,20 @@ const BODY_BUDGET_BYTES = 200 * 1024;
 
 const TOKEN_HEADER = 'X-Downpour-Token';
 
-// Custom scheme the desktop app is expected to register for "Open Downpour".
-// See README — if the app has not registered it, the tab simply fails to open
-// and the popup keeps showing the connection status instead.
-const APP_URL_SCHEME = 'downpour://open';
+// How long after a modifier key was last seen held a download still counts as
+// "the user asked for this one to go to the browser". Long enough to cover the
+// gap between the click and the server's first response byte, short enough
+// that a stray Alt press does not disable capture for the rest of the session.
+const BYPASS_WINDOW_MS = 2000;
+
+// A grabbed page is handed to grabber.html through chrome.storage.session.
+// Session storage is capped (1 MB on Chrome 102), so the collector is bounded.
+const GRAB_MAX_ITEMS = 1000;
+const GRAB_LABEL_MAX = 120;
+const GRAB_KEEP = 3; // how many previous grabs to leave in session storage
+
+// The protocol caps a batch at 500 items as well as at 256 KB.
+const BATCH_MAX_ITEMS = 500;
 
 const STORE = {
   token: 'token',
@@ -54,6 +64,13 @@ const STORE = {
   status: 'status'
 };
 
+/** chrome.storage.session keys — cleared when the browser closes. */
+const SESSION = {
+  modifiers: 'modifiers', // { alt: ts, ctrl: ts, shift: ts }
+  grabPrefix: 'grab:',
+  grabIndex: 'grabIndex'
+};
+
 /** Local (extension-side) preferences. */
 const DEFAULT_PREFS = {
   captureEnabled: true, // the user toggle from the popup
@@ -61,7 +78,17 @@ const DEFAULT_PREFS = {
   minSizeBytes: 0,
   includeExtensions: [], // empty = everything not excluded
   excludeExtensions: ['html', 'htm', 'css', 'js', 'json', 'svg', 'php'],
-  excludeHosts: []
+  excludeHosts: [],
+
+  // Hold this key while starting a download to let that ONE download go to the
+  // browser. 'alt' | 'ctrl' | 'shift' | 'none'.
+  bypassModifier: 'alt',
+
+  // Per-site rules. These apply ALWAYS — they are not part of the
+  // "app rules vs browser rules" switch, because "never capture from this
+  // site" has to mean never.
+  siteBlocklist: [], // hosts we must not capture from
+  siteAllowlist: [] // if non-empty, capture ONLY from these hosts
 };
 
 /**
@@ -179,6 +206,75 @@ async function setPrefs(patch) {
   const next = Object.assign(await getPrefs(), patch);
   await setLocal({ [STORE.prefs]: next });
   return next;
+}
+
+/**
+ * chrome.storage.session — in-memory, per browser session, survives service
+ * worker restarts. Used for things that must outlive the worker but must NOT
+ * outlive the browser: which modifier keys are being held, and the pending
+ * link-grab payload.
+ */
+function getSession(keys) {
+  return chrome.storage.session.get(keys);
+}
+
+function setSession(items) {
+  return chrome.storage.session.set(items);
+}
+
+/* ------------------------------------------------------------------ *
+ * Modifier-key bypass
+ * ------------------------------------------------------------------ */
+
+/**
+ * Record that a modifier was held. Called from the modifier-keys.js content
+ * script, which throttles and only reports while a key is actually down.
+ *
+ * Stored per key rather than as one "last event" record so that releasing
+ * Shift does not wipe the fact that Alt is still down.
+ */
+async function noteModifiers(msg) {
+  const at = Number(msg && msg.at) || Date.now();
+  const data = await getSession(SESSION.modifiers);
+  const current = Object.assign({ alt: 0, ctrl: 0, shift: 0 }, data[SESSION.modifiers] || {});
+  if (msg.alt) current.alt = at;
+  if (msg.ctrl) current.ctrl = at;
+  if (msg.shift) current.shift = at;
+  await setSession({ [SESSION.modifiers]: current });
+  return { noted: true };
+}
+
+/**
+ * Was the bypass modifier held around the time this download started?
+ *
+ * Compares against the EARLIER of "now" and the download's own startTime. The
+ * event usually fires within milliseconds of the click, but a slow server can
+ * put seconds between the two, and a fixed window measured from `now` would
+ * then miss a bypass the user really did perform.
+ */
+async function bypassRequested(item, prefs) {
+  const key = String(prefs.bypassModifier || 'alt').toLowerCase();
+  if (key === 'none' || !['alt', 'ctrl', 'shift'].includes(key)) return false;
+
+  const data = await getSession(SESSION.modifiers);
+  const held = data[SESSION.modifiers] || {};
+  const ts = Number(held[key]) || 0;
+  if (!ts) return false;
+
+  let reference = Date.now();
+  if (item && item.startTime) {
+    const started = Date.parse(item.startTime);
+    if (isFinite(started) && started > 0) reference = Math.min(reference, started);
+  }
+  return reference - ts <= BYPASS_WINDOW_MS && reference - ts >= -BYPASS_WINDOW_MS;
+}
+
+// 'ctrl' also covers Cmd on macOS — see modifier-keys.js, which folds metaKey
+// into ctrlKey. The label has to admit that or Mac users are told the wrong key.
+const MODIFIER_LABEL = { alt: 'Alt', ctrl: 'Ctrl/Cmd', shift: 'Shift', none: '' };
+
+function modifierLabel(prefs) {
+  return MODIFIER_LABEL[String((prefs && prefs.bypassModifier) || 'alt').toLowerCase()] || '';
 }
 
 /* ------------------------------------------------------------------ *
@@ -491,26 +587,61 @@ function hostExcluded(host, list) {
 
 /**
  * Merge the app's advisory rules with the user's local preferences.
- * When "use the app's rules" is off, the local fields win outright.
+ * When "use the app's rules" is off, the local fields win outright — EXCEPT
+ * for two things that always apply:
+ *
+ *   - the app's own `excludeHosts`, because a host the desktop app refuses to
+ *     handle should not be handed to it from the browser either; and
+ *   - the per-site allow/block lists, which are a user instruction rather
+ *     than a filter preference.
+ *
+ * That means the capture settings are fetched even when `useAppRules` is off.
+ * It costs one request per 30 seconds and the existing stale-cache fallback
+ * absorbs an app that is momentarily down.
  */
 function effectiveRules(prefs, appSettings) {
-  if (prefs.useAppRules) {
-    const s = appSettings || FALLBACK_APP_SETTINGS;
-    return {
-      enabled: s.enabled !== false,
-      minSizeBytes: Number(s.minSizeBytes) || 0,
-      includeExtensions: normaliseExtList(s.includeExtensions),
-      excludeExtensions: normaliseExtList(s.excludeExtensions),
-      excludeHosts: Array.isArray(s.excludeHosts) ? s.excludeHosts : []
-    };
-  }
-  return {
-    enabled: true,
-    minSizeBytes: Number(prefs.minSizeBytes) || 0,
-    includeExtensions: normaliseExtList(prefs.includeExtensions),
-    excludeExtensions: normaliseExtList(prefs.excludeExtensions),
-    excludeHosts: Array.isArray(prefs.excludeHosts) ? prefs.excludeHosts : []
-  };
+  const appHosts = appSettings && Array.isArray(appSettings.excludeHosts) ? appSettings.excludeHosts : [];
+
+  const base = prefs.useAppRules
+    ? (() => {
+        const s = appSettings || FALLBACK_APP_SETTINGS;
+        return {
+          enabled: s.enabled !== false,
+          minSizeBytes: Number(s.minSizeBytes) || 0,
+          includeExtensions: normaliseExtList(s.includeExtensions),
+          excludeExtensions: normaliseExtList(s.excludeExtensions),
+          excludeHosts: Array.isArray(s.excludeHosts) ? s.excludeHosts : []
+        };
+      })()
+    : {
+        enabled: true,
+        minSizeBytes: Number(prefs.minSizeBytes) || 0,
+        includeExtensions: normaliseExtList(prefs.includeExtensions),
+        excludeExtensions: normaliseExtList(prefs.excludeExtensions),
+        excludeHosts: Array.isArray(prefs.excludeHosts) ? prefs.excludeHosts : []
+      };
+
+  base.excludeHosts = base.excludeHosts.concat(
+    prefs.useAppRules ? [] : appHosts, // already in there when the app's rules are in charge
+    normaliseHostList(prefs.siteBlocklist)
+  );
+  base.allowHosts = normaliseHostList(prefs.siteAllowlist);
+  return base;
+}
+
+function normaliseHostList(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((h) =>
+      String(h || '')
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//, '')
+        .replace(/[/?#].*$/, '')
+        .replace(/^www\./, '')
+        .replace(/^\./, '')
+    )
+    .filter(Boolean);
 }
 
 function normaliseExtList(list) {
@@ -531,9 +662,20 @@ function decideCapture(item, rules) {
   if (!rules.enabled) return { intercept: false, reason: 'capture disabled by the app' };
 
   const url = item.finalUrl || item.url;
-  const host = hostOf(url);
-  if (hostExcluded(host, rules.excludeHosts)) {
-    return { intercept: false, reason: 'host excluded: ' + host };
+
+  // Check BOTH the download's own host and the page that started it. A file on
+  // cdn.example.net linked from example.com must be covered by "never capture
+  // from example.com", otherwise the rule looks broken every time a site uses
+  // a separate download domain.
+  const hosts = [hostOf(url), hostOf(item.referrer || '')].filter(Boolean);
+
+  const blocked = hosts.find((h) => hostExcluded(h, rules.excludeHosts));
+  if (blocked) return { intercept: false, reason: 'host excluded: ' + blocked };
+
+  if (rules.allowHosts && rules.allowHosts.length > 0) {
+    if (!hosts.some((h) => hostExcluded(h, rules.allowHosts))) {
+      return { intercept: false, reason: 'host not on the allowlist: ' + (hosts[0] || '?') };
+    }
   }
 
   const ext = fileExtensionOf(item.filename) || fileExtensionOf(url);
@@ -734,6 +876,14 @@ async function maybeCapture(item) {
   const prefs = await getPrefs();
   if (!prefs.captureEnabled) return; // user toggle in the popup
 
+  // THE ONE-OFF ESCAPE HATCH. Checked before anything else, and before any
+  // network traffic: "let this one go to the browser" should cost nothing and
+  // should work even when the app is unreachable.
+  if (await bypassRequested(item, prefs)) {
+    console.debug('[Downpour] bypass modifier held — letting the browser download', item.finalUrl || item.url);
+    return;
+  }
+
   const token = await getToken();
   if (!token) {
     // Not paired yet: do nothing, but make the badge say why.
@@ -745,16 +895,30 @@ async function maybeCapture(item) {
   const status = await getStatus();
   if (status.state === STATE.unauthorized) return;
 
+  // Fetched even when `useAppRules` is off: the app's excludeHosts are always
+  // honoured (see effectiveRules). Cached for 30s, so this is not a request
+  // per download.
   let appSettings = null;
-  if (prefs.useAppRules) {
-    try {
-      appSettings = await getAppCaptureSettings();
-    } catch (err) {
-      if (err instanceof OfflineError) return; // app closed — let Chrome download
-      if (err instanceof AuthError) return; // already surfaced by apiRequest
+  try {
+    appSettings = await getAppCaptureSettings();
+  } catch (err) {
+    // Offline and 401 stop capture outright regardless of whose rules are in
+    // charge: with no reachable app there is nothing to hand the download to,
+    // and carrying on would only mean the POST failing a moment later. The
+    // browser keeps the download either way, which is the outcome that
+    // matters.
+    if (err instanceof OfflineError) return;
+    if (err instanceof AuthError) return; // already surfaced by apiRequest
+
+    // The app answered, it just answered badly. If its rules are in charge we
+    // cannot decide anything, so stop and say so. If the browser-side rules
+    // are in charge we only lose the app's excludeHosts, which is not worth
+    // abandoning a capture the user configured locally.
+    if (prefs.useAppRules) {
       await reportError('Could not read capture settings: ' + (err && err.message));
       return;
     }
+    console.warn('[Downpour] could not read capture settings:', err && err.message);
   }
 
   const rules = effectiveRules(prefs, appSettings);
@@ -773,6 +937,7 @@ async function maybeCapture(item) {
 
 const MENU = {
   link: 'downpour-link',
+  grab: 'downpour-grab',
   pageLinks: 'downpour-page-links',
   selection: 'downpour-selection'
 };
@@ -790,13 +955,18 @@ async function installContextMenus() {
     contexts: ['link', 'image', 'video', 'audio']
   });
   chrome.contextMenus.create({
+    id: MENU.grab,
+    title: 'Grab links from this page…',
+    contexts: ['page', 'frame']
+  });
+  chrome.contextMenus.create({
     id: MENU.pageLinks,
     title: 'Download all links on this page',
     contexts: ['page', 'frame']
   });
   chrome.contextMenus.create({
     id: MENU.selection,
-    title: 'Send selected text links to Downpour',
+    title: 'Send selected links to Downpour',
     contexts: ['selection']
   });
 }
@@ -827,6 +997,7 @@ function friendlyError(err) {
 
 async function handleMenuClick(info, tab) {
   if (info.menuItemId === MENU.link) return sendSingleLink(info, tab);
+  if (info.menuItemId === MENU.grab) return startGrab(tab && tab.id, info.frameId);
   if (info.menuItemId === MENU.pageLinks) return sendAllPageLinks(info, tab);
   if (info.menuItemId === MENU.selection) return sendSelectionText(info, tab);
 }
@@ -880,16 +1051,35 @@ async function sendAllPageLinks(info, tab) {
   const payload = results && results[0] && results[0].result;
   const raw = (payload && payload.links) || [];
 
+  const result = await queueUrls(raw, {
+    startMode: 'addonly', // a whole page of links should not all start at once
+    source: 'extension-page-links',
+    pageUrl: info.pageUrl,
+    pageTitle: (payload && payload.title) || (tab && tab.title) || undefined
+  });
+  if (result.sent === 0) throw new Error('No downloadable links found on this page.');
+  return result;
+}
+
+/**
+ * Attach headers to a list of URLs and hand them to POST /downloads/batch.
+ *
+ * Shared by "download all links", the link grabber and anything else that
+ * queues more than one URL, so that cookie handling, chunking and the badge
+ * feedback exist once. Nothing here cancels a browser download, so the
+ * POST-then-cancel rule is satisfied by construction.
+ */
+async function queueUrls(rawUrls, { startMode, source, pageUrl, pageTitle }) {
   // Dedupe and drop anything the app would reject with 400 anyway.
   const seen = new Set();
   const urls = [];
-  for (const u of raw) {
+  for (const u of rawUrls || []) {
     if (!isHttpUrl(u)) continue;
     if (seen.has(u)) continue;
     seen.add(u);
     urls.push(u);
   }
-  if (urls.length === 0) throw new Error('No downloadable links found on this page.');
+  if (urls.length === 0) return { sent: 0, accepted: 0, rejected: 0 };
 
   const cookieCache = new Map();
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
@@ -898,14 +1088,14 @@ async function sendAllPageLinks(info, tab) {
     const headers = {};
     const cookie = await cookieHeaderCached(url, cookieCache);
     if (cookie) headers['Cookie'] = cookie;
-    if (info.pageUrl && isHttpUrl(info.pageUrl)) headers['Referer'] = info.pageUrl;
+    if (pageUrl && isHttpUrl(pageUrl)) headers['Referer'] = pageUrl;
     if (ua) headers['User-Agent'] = ua;
     items.push({
       url,
       headers,
-      startMode: 'addonly', // a whole page of links should not all start at once
-      source: 'extension-page-links',
-      pageTitle: (payload && payload.title) || (tab && tab.title) || undefined
+      startMode: startMode === 'start' ? 'start' : 'addonly',
+      source: source || 'extension',
+      pageTitle: pageTitle || undefined
     });
   }
 
@@ -922,12 +1112,15 @@ async function sendAllPageLinks(info, tab) {
   if (rejected > 0) {
     await reportError('Sent ' + accepted + ' links; Downpour rejected ' + rejected + '.');
   }
+  return { sent: items.length, accepted, rejected };
 }
 
 /**
- * Split a batch so no single request approaches the protocol's 256 KB body
- * cap. Cookie headers are long and a link-heavy page can produce hundreds of
- * items, so this is not theoretical.
+ * Split a batch so no single request breaks either of the protocol's two
+ * limits: 256 KB of body and 500 items. Cookie headers are long and a
+ * link-heavy page can produce hundreds of items, so neither cap is theoretical
+ * — a page of short, cookie-free URLs hits the count limit long before the
+ * byte limit.
  */
 function chunkByBodySize(items) {
   const chunks = [];
@@ -935,7 +1128,7 @@ function chunkByBodySize(items) {
   let size = 2; // "[]"
   for (const item of items) {
     const encoded = JSON.stringify(item).length + 1;
-    if (current.length > 0 && size + encoded > BODY_BUDGET_BYTES) {
+    if (current.length > 0 && (size + encoded > BODY_BUDGET_BYTES || current.length >= BATCH_MAX_ITEMS)) {
       chunks.push(current);
       current = [];
       size = 2;
@@ -947,12 +1140,46 @@ function chunkByBodySize(items) {
   return chunks;
 }
 
-async function sendSelectionText(info) {
-  const text = (info.selectionText || '').trim();
-  if (!text) throw new Error('Nothing selected.');
-  if (!/https?:\/\//i.test(text)) throw new Error('No http(s) links in the selection.');
+/** Injected: the full selection, not Chrome's truncated copy of it. */
+function readSelectionInPage() {
+  const sel = window.getSelection();
+  return sel ? sel.toString() : '';
+}
 
-  // The app does the URL extraction (POST /api/v1/downloads/text).
+/**
+ * Send the selected text to the app, verbatim.
+ *
+ * NO URL PARSING HAPPENS HERE, on purpose. `POST /api/v1/downloads/text`
+ * exists precisely so that there is exactly one URL extractor in the system,
+ * in the app. A second, subtly different regex in the extension would mean
+ * "the same selection gives different results depending on how you sent it",
+ * which is the worst kind of bug to explain.
+ *
+ * That is also why there is no local "does this even look like a link?"
+ * pre-check: deciding that is the app's job, and the `accepted === 0` path
+ * below already says so clearly.
+ */
+async function sendSelectionText(info, tab) {
+  // info.selectionText is truncated by Chrome (a few hundred characters), so a
+  // pasted list of twenty links would silently lose most of itself. Read the
+  // real selection from the frame that was right-clicked, and fall back to
+  // Chrome's copy if injection is not allowed there.
+  let text = '';
+  if (tab && typeof tab.id === 'number') {
+    const target = { tabId: tab.id };
+    if (info.frameId) target.frameIds = [info.frameId];
+    try {
+      const results = await chrome.scripting.executeScript({ target, func: readSelectionInPage });
+      const value = results && results[0] && results[0].result;
+      if (typeof value === 'string') text = value;
+    } catch (_) {
+      /* injection blocked on this page — use what the menu gave us */
+    }
+  }
+  if (!text) text = info.selectionText || '';
+  text = text.trim();
+  if (!text) throw new Error('Nothing selected.');
+
   const res = await apiRequest('/api/v1/downloads/text', {
     method: 'POST',
     body: { text: text.slice(0, BODY_BUDGET_BYTES), startMode: 'addonly' }
@@ -961,6 +1188,301 @@ async function sendSelectionText(info) {
   await clearError();
   if (accepted === 0) throw new Error('Downpour found no usable links in the selection.');
   await flashBadge(String(accepted));
+}
+
+/* ------------------------------------------------------------------ *
+ * Link grabber
+ *
+ * Collect every downloadable-looking URL on a page, then show the user a
+ * picker BEFORE anything is queued.
+ *
+ * The picker is its own extension page (grabber.html) opened in a tab, not a
+ * popup and not an injected overlay:
+ *   - a 320px popup cannot host a filterable list of 400 links, and it closes
+ *     the instant focus moves;
+ *   - an injected overlay inherits the host page's CSS resets, z-index wars
+ *     and `!important` rules, and would have to be defended against every
+ *     site on the internet.
+ * An extension page has its own origin, its own stylesheet and nothing to
+ * fight with.
+ *
+ * The list travels through chrome.storage.session rather than a message: the
+ * service worker can be killed between opening the tab and the tab asking for
+ * its data, and session storage survives that while module scope does not.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Injected into every frame. Must be entirely self-contained — it is
+ * serialised and evaluated in the page, so it can close over nothing.
+ *
+ * Returns absolute, deduplicated, http(s)-only URLs. `data:`, `blob:`,
+ * `javascript:` and `mailto:` are dropped here rather than later: they are
+ * never fetchable by the app and would only clutter the picker.
+ */
+function collectGrabbablesInPage(maxItems, labelMax) {
+  const out = [];
+  const seen = new Set();
+  const base = document.baseURI || location.href;
+
+  // The page's own address, so that same-page anchors (href="#section") do not
+  // turn into "download this page" once the fragment is stripped.
+  const selfUrl = (function () {
+    try {
+      const u = new URL(location.href);
+      u.hash = '';
+      return u.href;
+    } catch (_) {
+      return '';
+    }
+  })();
+
+  function clean(text) {
+    if (!text) return '';
+    return String(text).replace(/\s+/g, ' ').trim().slice(0, labelMax);
+  }
+
+  function add(raw, kind, label) {
+    if (out.length >= maxItems || !raw) return;
+    let abs;
+    try {
+      abs = new URL(String(raw).trim(), base);
+    } catch (_) {
+      return;
+    }
+    // The single protocol test that kills data:, blob:, javascript:, mailto:,
+    // about: and every other scheme in one go.
+    if (abs.protocol !== 'http:' && abs.protocol !== 'https:') return;
+    abs.hash = ''; // #anchor variants of one URL are one file
+    const url = abs.href;
+    if (url === selfUrl) return; // a link back to this very page is not a file
+    if (seen.has(url)) return;
+    seen.add(url);
+    out.push({ url: url, kind: kind, label: clean(label) });
+  }
+
+  // srcset is "url descriptor, url descriptor". URLs may legally contain a
+  // comma, which no simple split survives; taking the first whitespace-
+  // delimited token of each comma-separated entry and letting `new URL()`
+  // reject the wreckage is the pragmatic trade.
+  function addSrcset(value, kind, label) {
+    if (!value) return;
+    String(value)
+      .split(',')
+      .forEach(function (entry) {
+        const first = entry.trim().split(/\s+/)[0];
+        if (first) add(first, kind, label);
+      });
+  }
+
+  document.querySelectorAll('a[href]').forEach(function (a) {
+    add(a.getAttribute('href'), 'link', a.textContent || a.getAttribute('title'));
+  });
+
+  document.querySelectorAll('img').forEach(function (img) {
+    const label = img.getAttribute('alt') || img.getAttribute('title');
+    add(img.getAttribute('src'), 'image', label);
+    addSrcset(img.getAttribute('srcset'), 'image', label);
+  });
+
+  document.querySelectorAll('picture source[srcset]').forEach(function (s) {
+    addSrcset(s.getAttribute('srcset'), 'image', '');
+  });
+
+  document.querySelectorAll('video, audio').forEach(function (m) {
+    const kind = m.tagName.toLowerCase() === 'video' ? 'video' : 'audio';
+    const label = m.getAttribute('title') || m.getAttribute('aria-label');
+    add(m.getAttribute('src'), kind, label);
+    add(m.getAttribute('poster'), 'image', label);
+    m.querySelectorAll('source').forEach(function (s) {
+      add(s.getAttribute('src'), kind, label || s.getAttribute('type'));
+      addSrcset(s.getAttribute('srcset'), kind, label);
+    });
+  });
+
+  document.querySelectorAll('embed[src]').forEach(function (e) {
+    add(e.getAttribute('src'), 'embed', e.getAttribute('type'));
+  });
+  document.querySelectorAll('object[data]').forEach(function (e) {
+    add(e.getAttribute('data'), 'embed', e.getAttribute('type'));
+  });
+
+  // CSS background images on VISIBLE elements only.
+  //
+  // getComputedStyle is the expensive call here — it can force style and
+  // layout flushes — so the cheap geometry test runs first and the scan is
+  // hard-capped. This runs synchronously in the page, but only ever because
+  // the user explicitly asked for a grab.
+  const STYLE_SCAN_CAP = 4000;
+  let scanned = 0;
+  const all = document.body ? document.body.querySelectorAll('*') : [];
+  for (let i = 0; i < all.length; i++) {
+    if (scanned >= STYLE_SCAN_CAP || out.length >= maxItems) break;
+    const el = all[i];
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue; // display:none, collapsed, empty
+    scanned++;
+    let bg;
+    try {
+      bg = getComputedStyle(el).backgroundImage;
+    } catch (_) {
+      continue;
+    }
+    if (!bg || bg === 'none') continue;
+    const re = /url\((['"]?)(.*?)\1\)/g;
+    let m;
+    while ((m = re.exec(bg)) !== null) add(m[2], 'background', el.getAttribute('aria-label') || '');
+  }
+
+  return {
+    url: location.href,
+    title: document.title,
+    items: out,
+    truncated: out.length >= maxItems
+  };
+}
+
+/**
+ * Run the collector over a tab and open the picker.
+ *
+ * `allFrames: true` returns one result per frame and individual frames can
+ * come back with a null result (sandboxed, about:blank, cross-origin quirks).
+ * One bad frame must not discard the other nine, so results are merged
+ * defensively. The whole call still rejects when the TOP frame is off limits
+ * — chrome://, the Web Store, the PDF viewer — which is the case worth an
+ * explanatory error.
+ */
+async function startGrab(tabId, frameId) {
+  if (typeof tabId !== 'number') throw new Error('No page to scan.');
+
+  const args = [GRAB_MAX_ITEMS, GRAB_LABEL_MAX];
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: collectGrabbablesInPage,
+      args
+    });
+  } catch (err) {
+    // Some pages refuse allFrames outright. Fall back to the single frame the
+    // user was actually looking at before giving up.
+    const target = { tabId };
+    if (frameId) target.frameIds = [frameId];
+    try {
+      results = await chrome.scripting.executeScript({ target, func: collectGrabbablesInPage, args });
+    } catch (err2) {
+      throw new Error('Cannot read this page (Chrome blocks extensions on it): ' + (err2 && err2.message));
+    }
+  }
+
+  const seen = new Set();
+  const items = [];
+  let pageUrl = '';
+  let pageTitle = '';
+  let truncated = false;
+
+  for (const frame of results || []) {
+    if (items.length >= GRAB_MAX_ITEMS) {
+      truncated = true;
+      break;
+    }
+    const payload = frame && frame.result;
+    if (!payload || !Array.isArray(payload.items)) continue;
+    if (frame.frameId === 0 || !pageUrl) {
+      pageUrl = payload.url || pageUrl;
+      pageTitle = payload.title || pageTitle;
+    }
+    if (payload.truncated) truncated = true;
+    for (const entry of payload.items) {
+      if (items.length >= GRAB_MAX_ITEMS) {
+        truncated = true;
+        break;
+      }
+      if (!entry || typeof entry.url !== 'string') continue;
+      if (seen.has(entry.url)) continue;
+      seen.add(entry.url);
+      items.push(entry);
+    }
+  }
+
+  if (items.length === 0) throw new Error('Nothing downloadable found on this page.');
+
+  const id = 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  await storeGrab(id, { id, pageUrl, pageTitle, items, truncated, at: Date.now() });
+
+  await chrome.tabs.create({
+    url: chrome.runtime.getURL('grabber.html') + '?id=' + encodeURIComponent(id)
+  });
+  return { id, count: items.length, truncated };
+}
+
+/**
+ * Persist a grab for the picker tab to collect.
+ *
+ * chrome.storage.session is capped (1 MB on Chrome 102, 10 MB later), and a
+ * page of long URLs with long labels can get close. Rather than failing with
+ * an empty picker and no explanation, degrade: drop the labels, then drop the
+ * tail of the list, and only then give up with something the user can read.
+ */
+async function storeGrab(id, record) {
+  await pruneGrabs(id);
+  const key = SESSION.grabPrefix + id;
+
+  const attempts = [
+    record,
+    Object.assign({}, record, {
+      items: record.items.map((i) => ({ url: i.url, kind: i.kind })),
+      labelsDropped: true
+    }),
+    Object.assign({}, record, {
+      items: record.items.slice(0, 300).map((i) => ({ url: i.url, kind: i.kind })),
+      labelsDropped: true,
+      truncated: true
+    })
+  ];
+
+  let lastErr = null;
+  for (const attempt of attempts) {
+    try {
+      await setSession({ [key]: attempt });
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw new Error(
+    'That page produced more links than the extension can hand over at once (' +
+      (lastErr && lastErr.message ? lastErr.message : 'session storage full') +
+      '). Try grabbing a narrower page.'
+  );
+}
+
+/** Keep only the most recent few grabs; session storage is not a filing cabinet. */
+async function pruneGrabs(newId) {
+  const data = await getSession(SESSION.grabIndex);
+  const index = Array.isArray(data[SESSION.grabIndex]) ? data[SESSION.grabIndex] : [];
+  index.push(newId);
+  const drop = index.slice(0, Math.max(0, index.length - GRAB_KEEP));
+  const keep = index.slice(-GRAB_KEEP);
+  if (drop.length > 0) {
+    try {
+      await chrome.storage.session.remove(drop.map((i) => SESSION.grabPrefix + i));
+    } catch (_) {
+      /* nothing to clean up */
+    }
+  }
+  await setSession({ [SESSION.grabIndex]: keep });
+}
+
+async function readGrab(id) {
+  const key = SESSION.grabPrefix + String(id || '');
+  const data = await getSession(key);
+  const record = data[key];
+  if (!record) {
+    throw new Error(
+      'That list has expired. Grabs are kept only for the current browser session — run “Grab links” again.'
+    );
+  }
+  return record;
 }
 
 /* ------------------------------------------------------------------ *
@@ -984,10 +1506,57 @@ function errorKind(err) {
 
 async function handleMessage(msg) {
   switch (msg && msg.type) {
+    // From the modifier-keys content script. Kept first and kept cheap: this
+    // is the only message that arrives without a user opening any of our UI.
+    case 'modifierHeld':
+      return noteModifiers(msg);
+
     case 'getState': {
       const [status, prefs, token] = await Promise.all([getStatus(), getPrefs(), getToken()]);
-      return { status, prefs, hasToken: Boolean(token), token: msg.includeToken ? token : undefined };
+      return {
+        status,
+        prefs,
+        hasToken: Boolean(token),
+        token: msg.includeToken ? token : undefined,
+        bypassLabel: modifierLabel(prefs)
+      };
     }
+
+    /* ---- per-site rules ---- */
+
+    case 'setSiteRule': {
+      const host = normaliseHostList([msg.host])[0];
+      if (!host) throw new Error('That page has no host to add a rule for.');
+      const list = msg.list === 'allow' ? 'siteAllowlist' : 'siteBlocklist';
+      const prefs = await getPrefs();
+      const current = normaliseHostList(prefs[list]);
+      const next = msg.on ? current.concat(current.includes(host) ? [] : [host]) : current.filter((h) => h !== host);
+      const saved = await setPrefs({ [list]: next });
+      return { prefs: saved, host };
+    }
+
+    /* ---- link grabber ---- */
+
+    case 'grabLinks': {
+      let tabId = Number(msg.tabId);
+      if (!isFinite(tabId) || tabId < 0) {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!active) throw new Error('No active tab to scan.');
+        tabId = active.id;
+      }
+      return startGrab(tabId, 0);
+    }
+
+    case 'getGrab':
+      return readGrab(msg.id);
+
+    case 'queueGrabbed':
+      return queueUrls(msg.urls, {
+        startMode: msg.startMode === 'start' ? 'start' : 'addonly',
+        source: 'extension-link-grabber',
+        pageUrl: msg.pageUrl,
+        pageTitle: msg.pageTitle
+      });
 
     case 'setPrefs':
       return setPrefs(msg.prefs || {});
@@ -1130,20 +1699,21 @@ async function testConnection() {
 }
 
 /**
- * "Open Downpour". There is no show-window endpoint in protocol v1, so this
- * relies on the desktop app registering the downpour:// URL scheme with
- * Windows. If it has not, Chrome quietly refuses to navigate and the tab we
- * opened is closed again — no harm, and the popup still reports status.
+ * "Open Downpour" — POST /api/v1/show, which brings the app's window to the
+ * foreground and answers 204.
+ *
+ * This used to navigate a throwaway tab to a `downpour://` URL. That scheme
+ * was never registered by the app, so the button did nothing at all and
+ * failed silently, which is the worst of both worlds. The endpoint is
+ * authenticated and reports offline / bad-token through the same paths as
+ * every other call, so the popup can now say why it did not work.
+ *
+ * The 204 has no body: apiRequest returns null and that is a success.
  */
 async function openDesktopApp() {
-  const tab = await chrome.tabs.create({ url: APP_URL_SCHEME, active: false });
-  // The scheme handler takes over; the blank tab is not useful either way.
-  try {
-    await chrome.tabs.remove(tab.id);
-  } catch (_) {
-    /* already gone */
-  }
-  return { launched: true };
+  await apiRequest('/api/v1/show', { method: 'POST' });
+  await clearError();
+  return { shown: true };
 }
 
 /* ------------------------------------------------------------------ *

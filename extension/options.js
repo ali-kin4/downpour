@@ -50,6 +50,32 @@ function formatList(list) {
   return Array.isArray(list) ? list.join(', ') : '';
 }
 
+/**
+ * Host lists are edited one-per-line but pasted comma-separated just as often,
+ * so accept both. A pasted URL is reduced to its host: typing
+ * "https://example.com/downloads" and getting a rule that never matches is a
+ * pointless way to lose ten minutes.
+ */
+function parseHostList(value) {
+  return String(value || '')
+    .split(/[\s,;]+/)
+    .map((s) =>
+      s
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//, '')
+        .replace(/[/?#].*$/, '')
+        .replace(/^www\./, '')
+        .replace(/^\./, '')
+    )
+    .filter(Boolean)
+    .filter((host, i, all) => all.indexOf(host) === i);
+}
+
+function formatHostList(list) {
+  return Array.isArray(list) ? list.join('\n') : '';
+}
+
 /* ------------------------------------------------------------------ *
  * Load
  * ------------------------------------------------------------------ */
@@ -71,6 +97,9 @@ async function load() {
   $('includeExtensions').value = formatList(prefs.includeExtensions);
   $('excludeExtensions').value = formatList(prefs.excludeExtensions);
   $('excludeHosts').value = formatList(prefs.excludeHosts);
+  $('bypassModifier').value = String(prefs.bypassModifier || 'alt');
+  $('siteBlocklist').value = formatHostList(prefs.siteBlocklist);
+  $('siteAllowlist').value = formatHostList(prefs.siteAllowlist);
   $('version').textContent = status.appVersion ? 'app v' + status.appVersion : '';
 
   reflectRuleSource();
@@ -172,7 +201,9 @@ function showAppRules(s) {
     'size floor ' + (Number(s.minSizeBytes) ? formatBytes(s.minSizeBytes) : 'none'),
     'include: ' + (s.includeExtensions && s.includeExtensions.length ? s.includeExtensions.join(', ') : 'everything'),
     'exclude: ' + (s.excludeExtensions && s.excludeExtensions.length ? s.excludeExtensions.join(', ') : 'nothing'),
-    'excluded hosts: ' + (s.excludeHosts && s.excludeHosts.length ? s.excludeHosts.join(', ') : 'none')
+    'excluded hosts: ' +
+      (s.excludeHosts && s.excludeHosts.length ? s.excludeHosts.join(', ') : 'none') +
+      ' (always honoured, even with the browser-side rules in charge)'
   ];
   setMsg('appRulesPreview', 'Rules currently reported by the app:\n• ' + parts.join('\n• '));
 }
@@ -203,6 +234,52 @@ $('useAppRules').addEventListener('change', async (e) => {
     e.target.checked = !e.target.checked;
     reflectRuleSource();
     setMsg('tokenMsg', 'Could not save: ' + err.message, 'err');
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Bypass key
+ * ------------------------------------------------------------------ */
+
+const BYPASS_LABEL = { alt: 'Alt', ctrl: 'Ctrl (or Cmd)', shift: 'Shift' };
+
+$('bypassModifier').addEventListener('change', async (e) => {
+  const value = e.target.value;
+  try {
+    await send({ type: 'setPrefs', prefs: { bypassModifier: value } });
+    $('bypassMsg').textContent =
+      value === 'none'
+        ? 'Bypass disabled — every matching download goes to Downpour.'
+        : 'Hold ' + BYPASS_LABEL[value] + ' to send one download to the browser.';
+  } catch (err) {
+    $('bypassMsg').textContent = 'Could not save: ' + err.message;
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Per-site rules
+ * ------------------------------------------------------------------ */
+
+$('saveSites').addEventListener('click', async () => {
+  const blocklist = parseHostList($('siteBlocklist').value);
+  const allowlist = parseHostList($('siteAllowlist').value);
+
+  // Show the user what was actually stored: the parser strips schemes, paths
+  // and "www.", and silently rewriting what someone typed without showing it
+  // back is how a rule ends up looking broken.
+  $('siteBlocklist').value = formatHostList(blocklist);
+  $('siteAllowlist').value = formatHostList(allowlist);
+
+  try {
+    await send({ type: 'setPrefs', prefs: { siteBlocklist: blocklist, siteAllowlist: allowlist } });
+    $('sitesMsg').textContent = allowlist.length
+      ? 'Saved. Capture now runs ONLY on the ' + allowlist.length + ' allowed site(s).'
+      : 'Saved. ' + blocklist.length + ' site(s) will be skipped.';
+    setTimeout(() => {
+      $('sitesMsg').textContent = '';
+    }, 4000);
+  } catch (err) {
+    $('sitesMsg').textContent = 'Could not save: ' + err.message;
   }
 });
 

@@ -8,17 +8,16 @@
  */
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import clsx from "clsx";
 import {
   ArrowDownToLine,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   ClipboardList,
   Inbox,
   SearchX,
 } from "lucide-react";
 import { useMemo, useRef } from "react";
+import { fileKind } from "../lib/filetypes";
+import { ColumnHeader } from "./ColumnHeader";
 import type { DownloadItem, ViewFilter } from "../lib/types";
 import { matchesFilter } from "../lib/types";
 import { useApp, type SortKey } from "../store/app";
@@ -31,6 +30,7 @@ export function DownloadList() {
   const items = useApp((s) => s.items);
   const order = useApp((s) => s.order);
   const filter = useApp((s) => s.filter);
+  const category = useApp((s) => s.category);
   const search = useApp((s) => s.search);
   const sortKey = useApp((s) => s.sortKey);
   const sortDir = useApp((s) => s.sortDir);
@@ -38,10 +38,11 @@ export function DownloadList() {
   const selectAll = useApp((s) => s.selectAll);
   const clearSelection = useApp((s) => s.clearSelection);
 
-  const visible = useMemo(
-    () => filterAndSort(items, order, filter, search, sortKey, sortDir),
-    [items, order, filter, search, sortKey, sortDir],
+  const visibleItems = useMemo(
+    () => filterAndSort(items, order, filter, category, search, sortKey, sortDir),
+    [items, order, filter, category, search, sortKey, sortDir],
   );
+  const visible = useMemo(() => visibleItems.map((i) => i.id), [visibleItems]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -55,7 +56,8 @@ export function DownloadList() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <ListHeader
+      <ColumnHeader
+        visible={visibleItems}
         allSelected={allSelected}
         anySelected={selection.size > 0}
         onToggleAll={() => (allSelected ? clearSelection() : selectAll(visible))}
@@ -64,7 +66,10 @@ export function DownloadList() {
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
         {visible.length === 0 ? (
-          <EmptyState hasAny={order.length > 0} filtered={Boolean(search) || filter !== "all"} />
+          <EmptyState
+          hasAny={order.length > 0}
+          filtered={Boolean(search) || filter !== "all" || category !== null}
+        />
         ) : (
           <div
             style={{ height: virtualizer.getTotalSize(), position: "relative" }}
@@ -91,81 +96,11 @@ export function DownloadList() {
   );
 }
 
-/** Column headings. Grid template is duplicated in DownloadRow — keep in sync. */
-export const GRID_TEMPLATE =
-  "28px minmax(180px, 1fr) 92px minmax(140px, 220px) 96px 80px 108px 76px";
-
-function ListHeader({
-  allSelected,
-  anySelected,
-  onToggleAll,
-  disabled,
-}: {
-  allSelected: boolean;
-  anySelected: boolean;
-  onToggleAll: () => void;
-  disabled: boolean;
-}) {
-  const sortKey = useApp((s) => s.sortKey);
-  const sortDir = useApp((s) => s.sortDir);
-  const setSort = useApp((s) => s.setSort);
-
-  const columns: { key: SortKey | null; label: string; align?: string }[] = [
-    { key: "name", label: "Name" },
-    { key: "size", label: "Size", align: "text-right" },
-    { key: "progress", label: "Progress" },
-    { key: "speed", label: "Speed", align: "text-right" },
-    { key: null, label: "Left", align: "text-right" },
-    { key: "status", label: "Status" },
-    { key: null, label: "" },
-  ];
-
-  return (
-    <div
-      className="grid h-8 shrink-0 items-center gap-3 border-b border-[var(--border-subtle)] bg-[var(--surface-sunken)] px-3 text-[11px] font-medium text-[var(--text-tertiary)]"
-      style={{ gridTemplateColumns: GRID_TEMPLATE }}
-    >
-      <input
-        type="checkbox"
-        aria-label="Select all"
-        checked={allSelected}
-        ref={(el) => {
-          // Indeterminate cannot be set through an attribute.
-          if (el) el.indeterminate = anySelected && !allSelected;
-        }}
-        disabled={disabled}
-        onChange={onToggleAll}
-        className="size-3.5 accent-[var(--accent)]"
-      />
-      {columns.map((c, i) =>
-        c.key ? (
-          <button
-            key={c.label + i}
-            type="button"
-            onClick={() => setSort(c.key!)}
-            className={clsx(
-              "flex items-center gap-1 hover:text-[var(--text-primary)]",
-              c.align === "text-right" && "justify-end",
-            )}
-          >
-            {c.label}
-            {sortKey === c.key &&
-              (sortDir === "asc" ? <ChevronUp size={11} /> : <ChevronDown size={11} />)}
-          </button>
-        ) : (
-          <span key={c.label + i} className={c.align}>
-            {c.label}
-          </span>
-        ),
-      )}
-    </div>
-  );
-}
-
 function EmptyState({ hasAny, filtered }: { hasAny: boolean; filtered: boolean }) {
   const setAddOpen = useApp((s) => s.setAddOpen);
   const setPasteOpen = useApp((s) => s.setPasteOpen);
   const setFilter = useApp((s) => s.setFilter);
+  const setCategory = useApp((s) => s.setCategory);
   const setSearch = useApp((s) => s.setSearch);
 
   if (hasAny && filtered) {
@@ -178,6 +113,7 @@ function EmptyState({ hasAny, filtered }: { hasAny: boolean; filtered: boolean }
           <Button
             onClick={() => {
               setFilter("all");
+              setCategory(null);
               setSearch("");
             }}
           >
@@ -202,7 +138,7 @@ function EmptyState({ hasAny, filtered }: { hasAny: boolean; filtered: boolean }
     <Centered
       icon={<Inbox size={30} />}
       title="No downloads yet"
-      body="Paste a link, drop a list of URLs, or install the browser extension to capture downloads automatically."
+      body="Paste a link, drop in a batch of URLs, or install the browser extension to capture downloads automatically."
       action={
         <div className="flex gap-2">
           <Button
@@ -213,7 +149,7 @@ function EmptyState({ hasAny, filtered }: { hasAny: boolean; filtered: boolean }
             New download
           </Button>
           <Button icon={<ClipboardList size={14} />} onClick={() => setPasteOpen(true)}>
-            Add many links
+            New batch
           </Button>
         </div>
       }
@@ -263,16 +199,18 @@ function filterAndSort(
   items: Record<string, DownloadItem>,
   order: string[],
   filter: ViewFilter,
+  category: string | null,
   search: string,
   sortKey: SortKey,
   sortDir: "asc" | "desc",
-): string[] {
+): DownloadItem[] {
   const needle = search.trim().toLowerCase();
   const rows = order
     .map((id) => items[id])
     .filter((it): it is DownloadItem => {
       if (!it) return false;
       if (!matchesFilter(it.status, filter)) return false;
+      if (category && fileKind(it.filename).group !== category) return false;
       if (!needle) return true;
       // Search the URL too: a user hunting for a download often remembers the
       // site, not the filename the server chose.
@@ -304,5 +242,5 @@ function filterAndSort(
     }
   });
 
-  return rows.map((r) => r.id);
+  return rows;
 }

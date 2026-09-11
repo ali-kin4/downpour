@@ -68,7 +68,8 @@
               <p class="hint">
                 Follow the size floor and extension lists configured in the desktop app
                 (<code>/api/v1/capture</code>, re-read every 30 seconds). Turn this off to use the
-                browser-side rules below instead.
+                browser-side rules below instead. The app's list of excluded hosts is honoured
+                either way — a host the app refuses to handle is not worth sending it.
               </p>
             </div>
             <label class="switch">
@@ -78,6 +79,81 @@
           </div>
 
           <div id="appRulesPreview" class="msg" hidden style="margin-top: 10px"></div>
+        </section>
+
+        <!-- Bypass key -->
+        <section class="card">
+          <h2>Bypass key</h2>
+          <p class="hint">
+            Hold this key while starting a download to let <strong>that one download</strong> go to
+            the browser instead of Downpour — no need to turn capture off and back on. The key
+            counts if it was held within about two seconds of the download starting.
+          </p>
+          <div class="row wrap" style="margin-top: 10px">
+            <label class="checkline">
+              <span class="field-inline">Hold</span>
+              <select id="bypassModifier">
+                <option value="alt">Alt</option>
+                <option value="ctrl">Ctrl (Cmd on a Mac)</option>
+                <option value="shift">Shift</option>
+                <option value="none">Nothing — disable the bypass</option>
+              </select>
+            </label>
+            <span id="bypassMsg" class="hint"></span>
+          </div>
+          <p class="hint" style="margin-top: 8px">
+            Note that Chrome already treats <kbd>Alt</kbd>+click on a link as “download this”, which
+            is why Alt is the default: <kbd>Alt</kbd>+click means “download it here, in the browser”.
+            <kbd>Ctrl</kbd> and <kbd>Shift</kbd> change what a click does in Chrome (new tab, new
+            window), so they are better held while starting a download some other way. On macOS,
+            <kbd>Cmd</kbd> counts as Ctrl.
+          </p>
+        </section>
+
+        <!-- Per-site rules -->
+        <section class="card">
+          <h2>Per-site rules</h2>
+          <p class="hint">
+            These always apply, whether the rules above come from the app or from the browser. One
+            host per line (or comma separated). Subdomains are included:
+            <code>example.com</code> also covers <code>files.example.com</code>. Both the download's
+            own host <em>and</em> the page that started it are checked, so a site that serves its
+            files from a separate CDN is still covered.
+          </p>
+
+          <div class="stack" style="margin-top: 10px">
+            <div>
+              <label class="field" for="siteBlocklist">Never capture from these sites</label>
+              <textarea
+                id="siteBlocklist"
+                class="mono hostlist"
+                spellcheck="false"
+                placeholder="mail.google.com&#10;intranet.example.com"
+              ></textarea>
+              <p class="hint">
+                The popup's “Never capture from this site” switch adds and removes entries here.
+              </p>
+            </div>
+
+            <div>
+              <label class="field" for="siteAllowlist">Only capture from these sites</label>
+              <textarea
+                id="siteAllowlist"
+                class="mono hostlist"
+                spellcheck="false"
+                placeholder="Leave empty to capture from everywhere except the blocklist"
+              ></textarea>
+              <p class="hint">
+                Leave this empty unless you want capture off by default. When it has any entry,
+                every other site is skipped.
+              </p>
+            </div>
+
+            <div class="row wrap">
+              <button class="primary" id="saveSites">Save site rules</button>
+              <span id="sitesMsg" class="hint"></span>
+            </div>
+          </div>
         </section>
 
         <!-- Local rules -->

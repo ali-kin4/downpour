@@ -22,6 +22,7 @@ import type {
   Settings,
   ViewFilter,
 } from "../lib/types";
+import { playChime } from "../lib/chime";
 import { matchesFilter } from "../lib/types";
 
 export type SortKey = "added" | "name" | "size" | "progress" | "speed" | "status";
@@ -45,6 +46,8 @@ interface AppState {
 
   // --- view ---
   filter: ViewFilter;
+  /** File-type group from the sidebar, or null for no category filter. */
+  category: string | null;
   search: string;
   sortKey: SortKey;
   sortDir: SortDir;
@@ -73,6 +76,7 @@ interface AppState {
   saveSettings: (next: Settings) => Promise<void>;
 
   setFilter: (f: ViewFilter) => void;
+  setCategory: (c: string | null) => void;
   setSearch: (s: string) => void;
   setSort: (key: SortKey) => void;
 
@@ -110,6 +114,7 @@ export const useApp = create<AppState>((set, get) => ({
   loadError: null,
 
   filter: "all",
+  category: null,
   search: "",
   sortKey: "added",
   sortDir: "desc",
@@ -212,6 +217,7 @@ export const useApp = create<AppState>((set, get) => ({
           items,
           justFinished: !othersBusy && visible ? finished : get().justFinished,
         });
+        if (get().settings?.soundOnComplete) void playChime();
         break;
       }
       case "failed": {
@@ -297,6 +303,9 @@ export const useApp = create<AppState>((set, get) => ({
 
   setFilter(filter) {
     set({ filter, selection: new Set() });
+  },
+  setCategory(category) {
+    set({ category, selection: new Set() });
   },
   setSearch(search) {
     set({ search });

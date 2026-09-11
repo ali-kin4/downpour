@@ -19,6 +19,10 @@ type Handler = (args: Record<string, unknown>) => unknown;
 
 const now = Math.floor(Date.now() / 1000);
 
+/** 64 characters, so the UI's masking and length checks behave, but obviously
+ *  not a credential to a human or to a secret scanner. */
+const DEV_FAKE_TOKEN = "dev-fixture-token-not-a-real-secret".padEnd(64, "0");
+
 function item(over: Partial<DownloadItem> & { id: string; filename: string }): DownloadItem {
   return {
     url: `https://releases.example.com/${over.filename}`,
@@ -142,7 +146,11 @@ const settings: Settings = {
   clipboardExtensions: [],
   clipboardAutoAdd: false,
   rpcPort: 47113,
-  rpcToken: "b3f1c2a49d7e40518c6a2f0e19d84b7c5a3e9012f4d6b8c1a7e5039fd2c46b8a",
+  // Deliberately low-entropy and self-describing. A realistic-looking 64-hex
+  // string here is indistinguishable from a leaked credential to a secret
+  // scanner, and it trips one on every clone of this repo. The real token is
+  // generated per install and never leaves the user's local database.
+  rpcToken: DEV_FAKE_TOKEN,
   rpcEnabled: true,
   userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0",
   theme: "system",
@@ -152,6 +160,7 @@ const settings: Settings = {
   closeToTray: true,
   notifyOnComplete: true,
   notifyOnError: true,
+  progressWindow: true,
   soundOnComplete: false,
 };
 
@@ -193,6 +202,18 @@ const handlers: Record<string, Handler> = {
       extensions: c.extensions,
     })),
   create_category_folders: () => 1,
+  // Reports the completed wallpaper as a prior download, so the duplicate
+  // notice is reachable in the browser harness.
+  check_duplicate: ({ url }) => ({
+    previous: String(url).includes("wallpaper") ? items[6] : null,
+    previousFileExists: true,
+    inProgress: null,
+    conflictingPath: null,
+  }),
+  show_main_window: () => null,
+  open_progress_window: () => null,
+  close_progress_window: () => null,
+  progress_window_open: () => false,
   preview_links: ({ text }) =>
     String(text ?? "").match(/https?:\/\/\S+/g) ?? [],
   app_version: () => "0.1.0-dev",
@@ -231,5 +252,11 @@ export function installMockBackend() {
     transformCallback: (cb: unknown) => cb,
     unregisterListener: () => {},
   };
+  // `unlisten()` reads a *different* global than `invoke` does; without this
+  // stub every StrictMode double-mount throws on cleanup.
+  (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener: async () => {},
+  };
+
   console.info("[mock] Tauri backend stubbed for browser development");
 }

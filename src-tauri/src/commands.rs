@@ -4,7 +4,7 @@
 //! tested without a window; these functions translate types and turn engine
 //! errors into strings the UI can display.
 
-use downpour_core::model::{DownloadItem, DownloadSpec, RemoteInfo, StartMode};
+use downpour_core::model::{DownloadItem, DownloadSpec, DownloadStatus, RemoteInfo, StartMode};
 use downpour_core::settings::Settings;
 use downpour_core::{probe, QueueStats};
 use serde::{Deserialize, Serialize};
@@ -440,4 +440,120 @@ pub fn create_category_folders(state: State<'_, AppState>) -> CmdResult<usize> {
 #[tauri::command]
 pub fn app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate detection
+// ---------------------------------------------------------------------------
+
+/// What Downpour already knows about a URL the user is about to add.
+///
+/// "I already downloaded this and forgot" is one of the most common things a
+/// download manager can save you from, and it needs an answer *before* the
+/// transfer starts rather than a duplicate file afterwards.
+#[derive(Debug, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateInfo {
+    /// A finished download of the same URL, if there is one.
+    pub previous: Option<DownloadItem>,
+    /// Whether that download's file is still on disk.
+    pub previous_file_exists: bool,
+    /// An unfinished entry for the same URL, which can be resumed instead.
+    pub in_progress: Option<DownloadItem>,
+    /// A file already occupying the name this download would take, even though
+    /// Downpour has no record of it — a previous manual download, usually.
+    pub conflicting_path: Option<PathBuf>,
+}
+
+impl DuplicateInfo {
+    fn any(&self) -> bool {
+        self.previous.is_some() || self.in_progress.is_some() || self.conflicting_path.is_some()
+    }
+}
+
+/// Checks a URL against the download history and the filesystem.
+///
+/// `filename` is what the caller intends to save as; when omitted the check is
+/// URL-only. Both matter: the same file can arrive from a different URL, and
+/// the same URL can be saved under a different name.
+#[tauri::command]
+pub fn check_duplicate(
+    state: State<'_, AppState>,
+    url: String,
+    filename: Option<String>,
+) -> DuplicateInfo {
+    let settings = state.engine.settings();
+    let items = state.engine.list();
+    let normalised = normalise_url(&url);
+
+    let mut info = DuplicateInfo::default();
+
+    for item in &items {
+        if normalise_url(&item.url) != normalised
+            && item.final_url.as_deref().map(normalise_url) != Some(normalised.clone())
+        {
+            continue;
+        }
+        match item.status {
+            DownloadStatus::Completed if info.previous.is_none() => {
+                info.previous_file_exists = item.target_path().exists();
+                info.previous = Some(item.clone());
+            }
+            s if !s.is_terminal() && info.in_progress.is_none() => {
+                info.in_progress = Some(item.clone());
+            }
+            _ => {}
+        }
+    }
+
+    // A file already sitting at the intended path, with no matching history
+    // entry. Reporting it alongside a history hit would be noise, so it is only
+    // surfaced when there is nothing better to say.
+    if info.previous.is_none() {
+        if let Some(name) = filename
+            .as_deref()
+            .and_then(downpour_core::naming::sanitize)
+        {
+            let dir = settings.dest_dir_for(&name);
+            let path = dir.join(&name);
+            if path.exists() {
+                info.conflicting_path = Some(path);
+            }
+        }
+    }
+
+    if !info.any() {
+        tracing::debug!(url, "no duplicate found");
+    }
+    info
+}
+
+/// Strips the parts of a URL that do not identify the resource.
+///
+/// Signed CDN links carry expiring tokens in the query string, so comparing
+/// raw URLs would report "new download" for a file fetched twice from the same
+/// place. Dropping the query and fragment is crude but matches how people
+/// think about "the same link".
+fn normalise_url(url: &str) -> String {
+    let trimmed = url.split(['?', '#']).next().unwrap_or(url);
+    trimmed.trim_end_matches('/').to_ascii_lowercase()
+}
+
+// ---------------------------------------------------------------------------
+// Progress window
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn open_progress_window(app: AppHandle) -> CmdResult<()> {
+    crate::progress_window::open(&app).map_err(err)
+}
+
+#[tauri::command]
+pub fn close_progress_window(app: AppHandle) {
+    crate::progress_window::close(&app);
+}
+
+#[tauri::command]
+pub fn progress_window_open(app: AppHandle) -> bool {
+    crate::progress_window::is_open(&app)
 }

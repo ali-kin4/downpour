@@ -190,6 +190,8 @@ pub struct Settings {
     pub close_to_tray: bool,
     pub notify_on_complete: bool,
     pub notify_on_error: bool,
+    /// Pop the compact always-on-top progress panel when a transfer starts.
+    pub progress_window: bool,
     /// Play the completion sound. Off by default; unsolicited noise is rude.
     pub sound_on_complete: bool,
 }
@@ -225,6 +227,7 @@ impl Default for Settings {
             close_to_tray: true,
             notify_on_complete: true,
             notify_on_error: true,
+            progress_window: true,
             sound_on_complete: false,
         }
     }
@@ -235,7 +238,9 @@ impl Settings {
     /// every save, so a hand-edited config file cannot wedge the app.
     pub fn normalise(&mut self) {
         self.max_concurrent_downloads = self.max_concurrent_downloads.clamp(1, 32);
-        self.max_connections_per_download = self.max_connections_per_download.clamp(1, 32);
+        self.max_connections_per_download = self
+            .max_connections_per_download
+            .clamp(1, crate::transfer::MAX_CONNECTIONS);
         self.max_retries = self.max_retries.min(100);
         self.request_timeout_secs = self.request_timeout_secs.clamp(5, 3600);
         if self.user_agent.trim().is_empty() {
@@ -384,7 +389,7 @@ mod tests {
         s.user_agent = "  ".into();
         s.normalise();
         assert_eq!(s.max_concurrent_downloads, 1);
-        assert_eq!(s.max_connections_per_download, 32);
+        assert_eq!(s.max_connections_per_download, 16);
         assert_eq!(s.request_timeout_secs, 5);
         assert_eq!(s.rpc_port, 47_113);
         assert_eq!(s.user_agent, DEFAULT_USER_AGENT);

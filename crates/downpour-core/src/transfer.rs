@@ -27,7 +27,7 @@ use crate::resume::{connections_for_size, plan_segments, Sidecar};
 use crate::throttle::RateLimiter;
 use futures::StreamExt;
 use parking_lot::Mutex;
-use reqwest::header::{HeaderValue, CONTENT_RANGE, RANGE};
+use reqwest::header::{HeaderValue, CONTENT_RANGE, RANGE, RETRY_AFTER};
 use reqwest::{Client, StatusCode};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -39,6 +39,27 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 /// Below this, halving a segment costs more in request overhead than it saves.
 pub const DEFAULT_MIN_STEAL_BYTES: u64 = 1024 * 1024;
+
+/// Hard ceiling on connections to a single host.
+///
+/// Sixteen is where the evidence stops showing gains and starts showing
+/// rate-limiting. Beyond it a download manager is not fast, it is antisocial:
+/// it crowds out other traffic, trips CDN abuse heuristics, and gets the user
+/// a 429 or an IP ban. This is a correctness-of-behaviour limit, not a tuning
+/// knob, so it is not configurable upward.
+pub const MAX_CONNECTIONS: u8 = 16;
+
+/// How many times one segment may be rate-limited before the download fails.
+///
+/// Deliberately small and, unlike the ordinary retry counter, **not** reset by
+/// progress. A host that dribbles bytes while intermittently returning 429 is
+/// telling us to go away; retrying it indefinitely is how a downloader earns
+/// an IP ban for its users.
+const MAX_RATE_LIMIT_RETRIES: u32 = 5;
+
+/// Ceiling on an honoured `Retry-After`. Some servers send absurd values, and
+/// a download that silently sleeps for an hour looks like a hang.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
 
 const CONTROL_RUN: u8 = 0;
 const CONTROL_PAUSE: u8 = 1;
@@ -613,6 +634,7 @@ async fn fetch_segment(
     config: &TransferConfig,
 ) -> Result<()> {
     let mut attempts: u32 = 0;
+    let mut rate_limited: u32 = 0;
     let mut last_cursor = table.lock().bounds(idx).0;
 
     loop {
@@ -624,6 +646,25 @@ async fn fetch_segment(
 
         match stream_range(ctx, url, idx, table, file, cursor, end).await {
             Ok(()) => return Ok(()),
+            Err(Error::RateLimited { retry_after_secs }) => {
+                rate_limited += 1;
+                if rate_limited > MAX_RATE_LIMIT_RETRIES {
+                    tracing::warn!(
+                        rate_limited,
+                        "server kept rate limiting us; giving up rather than hammering it"
+                    );
+                    return Err(Error::RateLimited { retry_after_secs });
+                }
+                // The server's own number wins when it gave one; otherwise back
+                // off harder than for an ordinary error, since the problem is
+                // that we are asking for too much.
+                let wait = retry_after_secs
+                    .map(Duration::from_secs)
+                    .unwrap_or_else(|| backoff_delay(rate_limited + 2))
+                    .min(MAX_RETRY_AFTER);
+                tracing::info!(?wait, rate_limited, "rate limited; waiting");
+                tokio::time::sleep(wait).await;
+            }
             Err(e) if e.is_transient() => {
                 let (now_cursor, _) = table.lock().bounds(idx);
                 if now_cursor > last_cursor {
@@ -668,6 +709,15 @@ fn backoff_delay(attempt: u32) -> Duration {
     )
 }
 
+/// Reads `Retry-After`, which RFC 9110 allows as either a delay in seconds or
+/// an HTTP date. Only the delay form is honoured; a date needs clock-skew
+/// handling to be worth anything, and servers that rate-limit overwhelmingly
+/// send seconds.
+fn parse_retry_after(value: Option<&HeaderValue>) -> Option<u64> {
+    let raw = value?.to_str().ok()?.trim();
+    raw.parse::<u64>().ok()
+}
+
 async fn stream_range(
     ctx: &TransferContext,
     url: &str,
@@ -694,6 +744,11 @@ async fn stream_range(
         if status.is_success() {
             return Err(Error::RangeNotHonoured {
                 status: status.as_u16(),
+            });
+        }
+        if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
+            return Err(Error::RateLimited {
+                retry_after_secs: parse_retry_after(response.headers().get(RETRY_AFTER)),
             });
         }
         return Err(Error::BadStatus {
@@ -881,13 +936,49 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Builds the HTTP client the engine uses.
 ///
-/// HTTP/2 is left enabled but `pool_max_idle_per_host` is generous, because a
-/// segmented download deliberately opens many connections to one host and we do
-/// not want them torn down and rebuilt between segments.
+/// # Why HTTP/1.1 only
+///
+/// This is the single most consequential line in the engine, and it is not an
+/// oversight.
+///
+/// Over TLS, ALPN negotiates HTTP/2 with essentially every CDN and release
+/// host. `reqwest` then **multiplexes every concurrent request to an origin
+/// onto one TCP connection**. A sixteen-way segmented download therefore opens
+/// sixteen *streams* inside a single connection — which defeats the entire
+/// reason for segmenting, because the thing being worked around is
+/// *per-connection* server shaping, and all sixteen streams sit in the same
+/// shaping bucket.
+///
+/// It is also a hard throughput ceiling. hyper's HTTP/2 connection window
+/// defaults to 5 MiB and reqwest leaves adaptive windowing off, so the whole
+/// download is capped at roughly one window per round trip: about 420 Mbit/s
+/// at 100 ms RTT, no matter how the file is split. That ceiling is invisible
+/// on a LAN, which is why it is easy to benchmark and miss.
+///
+/// Forcing HTTP/1.1 gives one real TCP connection per segment, which is what
+/// segmentation is for. HTTP/2's advantages — header compression, no
+/// head-of-line blocking across many small requests — are worth nothing to a
+/// client fetching a handful of very large byte ranges.
+///
+/// # Why no compression
+///
+/// Asking for gzip on a download manager is close to always wrong: the payload
+/// is usually already compressed, so it costs CPU for no gain, and a
+/// transfer-encoded body makes the byte arithmetic that ranged requests depend
+/// on ambiguous. `curl`, `wget` and `aria2` all send no `Accept-Encoding` for
+/// the same reasons.
 pub fn build_client(user_agent: &str, timeout: Duration) -> Result<Client> {
     Client::builder()
         .user_agent(user_agent)
-        .pool_max_idle_per_host(32)
+        .http1_only()
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        // A segmented download deliberately holds several connections to one
+        // host; without a generous idle pool they are torn down and rebuilt
+        // between segments, paying a fresh TCP and TLS handshake each time.
+        .pool_max_idle_per_host(MAX_CONNECTIONS as usize)
+        .pool_idle_timeout(Duration::from_secs(90))
         .connect_timeout(Duration::from_secs(20))
         .read_timeout(timeout)
         .redirect(reqwest::redirect::Policy::limited(10))
@@ -1024,6 +1115,48 @@ mod tests {
         assert!(d1 < Duration::from_secs(1));
         assert!(d8 <= Duration::from_secs(40), "{d8:?}");
         assert!(d8 > d1);
+    }
+
+    #[test]
+    fn retry_after_reads_the_delay_form() {
+        let h = |v: &str| parse_retry_after(Some(&HeaderValue::from_str(v).unwrap()));
+        assert_eq!(h("30"), Some(30));
+        assert_eq!(h("  5 "), Some(5));
+        assert_eq!(h("0"), Some(0));
+        // The HTTP-date form is not honoured; sleeping on a parsed date needs
+        // clock-skew handling to be safe, and the caller falls back to its own
+        // backoff when this returns None.
+        assert_eq!(h("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+        assert_eq!(h("soon"), None);
+        assert_eq!(parse_retry_after(None), None);
+    }
+
+    #[test]
+    fn rate_limiting_is_transient_but_a_404_is_not() {
+        assert!(Error::RateLimited {
+            retry_after_secs: None
+        }
+        .is_transient());
+        assert!(Error::BadStatus {
+            status: 503,
+            url: "u".into()
+        }
+        .is_transient());
+        assert!(Error::BadStatus {
+            status: 408,
+            url: "u".into()
+        }
+        .is_transient());
+        assert!(!Error::BadStatus {
+            status: 404,
+            url: "u".into()
+        }
+        .is_transient());
+        assert!(!Error::BadStatus {
+            status: 403,
+            url: "u".into()
+        }
+        .is_transient());
     }
 
     #[test]

@@ -24,6 +24,7 @@ import * as api from "../lib/api";
 import { formatBytes } from "../lib/format";
 import type { RemoteInfo, StartMode } from "../lib/types";
 import { useApp } from "../store/app";
+import { DuplicateNotice } from "./DuplicateNotice";
 import { Button, Dialog, Field, Segmented, Spinner, TextArea, TextInput } from "./ui";
 
 const PROBE_DEBOUNCE_MS = 550;
@@ -44,6 +45,8 @@ export function AddDialog() {
   const [checksum, setChecksum] = useState("");
   const [advanced, setAdvanced] = useState(false);
 
+  const [duplicate, setDuplicate] = useState<api.DuplicateInfo | null>(null);
+  const [dismissedDuplicate, setDismissedDuplicate] = useState(false);
   const [probe, setProbe] = useState<RemoteInfo | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
@@ -64,6 +67,8 @@ export function AddDialog() {
     setAdvanced(false);
     setProbe(null);
     setProbeError(null);
+    setDuplicate(null);
+    setDismissedDuplicate(false);
 
     void readText().then(
       (text) => {
@@ -81,6 +86,8 @@ export function AddDialog() {
     const trimmed = url.trim();
     setProbe(null);
     setProbeError(null);
+    setDuplicate(null);
+    setDismissedDuplicate(false);
     if (!/^https?:\/\/\S+$/i.test(trimmed)) return;
 
     const seq = ++probeSeq.current;
@@ -91,6 +98,9 @@ export function AddDialog() {
           if (seq !== probeSeq.current) return;
           setProbe(info);
           setProbing(false);
+          void api
+            .checkDuplicate(trimmed, info.suggestedFilename ?? null)
+            .then((dup) => seq === probeSeq.current && setDuplicate(dup), () => undefined);
         },
         (e) => {
           if (seq !== probeSeq.current) return;
@@ -180,6 +190,10 @@ export function AddDialog() {
         </Field>
 
         <ProbePreview probing={probing} probe={probe} error={probeError} url={url} />
+
+        {duplicate && !dismissedDuplicate && (
+          <DuplicateNotice info={duplicate} onDismiss={() => setDismissedDuplicate(true)} />
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <Field label="Save as" hint="Leave blank to use the server's filename.">

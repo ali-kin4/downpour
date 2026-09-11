@@ -97,8 +97,8 @@ export function PasteDialog() {
     <Dialog
       open={open}
       onClose={() => setOpen(false)}
-      title="Add links"
-      subtitle="Paste anything. Downpour finds the links in it."
+      title="New batch"
+      subtitle="Paste anything, or import a .txt file. Downpour finds the links in it."
       width={620}
       footer={
         <>

@@ -90,7 +90,7 @@ export function MenuBar() {
         run: () => s().setAddOpen(true),
       },
       {
-        label: "Add links from text…",
+        label: "New batch…",
         icon: <ClipboardList size={14} />,
         shortcut: "Ctrl V",
         run: () => s().setPasteOpen(true),

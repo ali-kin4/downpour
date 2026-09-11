@@ -152,6 +152,8 @@ export interface Settings {
   closeToTray: boolean;
   notifyOnComplete: boolean;
   notifyOnError: boolean;
+  /** Pop the compact always-on-top panel when a transfer starts. */
+  progressWindow: boolean;
   soundOnComplete: boolean;
 }
 

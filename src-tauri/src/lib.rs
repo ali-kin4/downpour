@@ -7,6 +7,7 @@
 
 mod commands;
 mod power;
+mod progress_window;
 mod rpc;
 mod state;
 mod tray;
@@ -76,6 +77,10 @@ pub fn run() {
             commands::quit_app,
             commands::category_folders,
             commands::create_category_folders,
+            commands::check_duplicate,
+            commands::open_progress_window,
+            commands::close_progress_window,
+            commands::progress_window_open,
             commands::app_version,
         ])
         .run(tauri::generate_context!())
@@ -122,6 +127,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
     state::spawn_event_bridge(handle.clone(), &engine);
     spawn_power_watcher(handle.clone(), &engine);
+    spawn_progress_window_watcher(handle.clone(), &engine);
     tray::build(&handle)?;
     apply_autostart(&handle);
 
@@ -146,6 +152,33 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Pops the compact progress panel the moment a transfer starts.
+///
+/// Driven by the event stream rather than by the add path, so it appears for a
+/// download that started from the tray, the browser extension or a scheduler
+/// window opening at 2am — not only for one the user clicked Add on.
+fn spawn_progress_window_watcher(app: tauri::AppHandle, engine: &Engine) {
+    let mut rx = engine.subscribe();
+    let engine = engine.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Ok(event) = rx.recv().await {
+            let started = matches!(
+                event,
+                EngineEvent::StatusChanged {
+                    status: downpour_core::DownloadStatus::Running,
+                    ..
+                }
+            );
+            if !started || !engine.settings().progress_window {
+                continue;
+            }
+            if let Err(e) = progress_window::open(&app) {
+                tracing::warn!(error = %e, "could not open the progress window");
+            }
+        }
+    });
 }
 
 /// Watches for the queue draining and runs the configured post-queue action.

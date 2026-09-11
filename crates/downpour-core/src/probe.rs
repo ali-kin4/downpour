@@ -24,7 +24,13 @@ pub fn build_headers(headers: &BTreeMap<String, String>) -> HeaderMap {
     for (k, v) in headers {
         // `Range` is ours to control; a stale one from a captured request would
         // silently truncate every segment.
-        if k.eq_ignore_ascii_case("range") {
+        //
+        // `Accept-Encoding` is dropped for a subtler reason: headers captured
+        // from a browser routinely ask for `gzip, br, zstd`, and a compressed
+        // response makes the byte offsets a ranged download is built on
+        // meaningless. We would also be advertising codecs this client was not
+        // built with, whose bytes it could not decode at all.
+        if k.eq_ignore_ascii_case("range") || k.eq_ignore_ascii_case("accept-encoding") {
             continue;
         }
         if let (Ok(name), Ok(value)) = (
@@ -204,6 +210,18 @@ mod tests {
         let built = build_headers(&m);
         assert!(built.get(RANGE).is_none(), "caller Range must not survive");
         assert_eq!(built.get("cookie").unwrap(), "session=abc");
+    }
+
+    #[test]
+    fn build_headers_drops_caller_supplied_accept_encoding() {
+        // Browser-captured headers routinely carry this, and a compressed body
+        // breaks the byte arithmetic every ranged download depends on.
+        let mut m = BTreeMap::new();
+        m.insert("accept-encoding".to_string(), "gzip, br, zstd".to_string());
+        m.insert("Cookie".to_string(), "a=b".to_string());
+        let built = build_headers(&m);
+        assert!(built.get("accept-encoding").is_none());
+        assert_eq!(built.len(), 1);
     }
 
     #[test]

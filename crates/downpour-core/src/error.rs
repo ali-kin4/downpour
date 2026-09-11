@@ -28,6 +28,16 @@ pub enum Error {
     #[error("server returned status {status} for {url}")]
     BadStatus { status: u16, url: String },
 
+    /// The server asked us to slow down. Distinct from a generic 5xx because
+    /// it must be retried on the server's schedule and a bounded number of
+    /// times: a client that retries a 429 forever, at the same connection
+    /// count, is how a user ends up IP-banned.
+    #[error("rate limited by the server{}", match .retry_after_secs {
+        Some(s) => format!("; asked to wait {s}s"),
+        None => String::new(),
+    })]
+    RateLimited { retry_after_secs: Option<u64> },
+
     /// The server advertised `Accept-Ranges: bytes` but did not honour a real
     /// range request. Callers fall back to a single stream rather than writing
     /// a full body into a segment slot.
@@ -79,9 +89,10 @@ impl Error {
                     | std::io::ErrorKind::Interrupted
             ),
             Error::BadStatus { status, .. } => {
-                // 408 timeout, 429 rate limit, 5xx server-side.
-                *status == 408 || *status == 429 || (*status >= 500 && *status < 600)
+                // 408 request timeout, and anything the server blames on itself.
+                *status == 408 || (*status >= 500 && *status < 600)
             }
+            Error::RateLimited { .. } => true,
             _ => false,
         }
     }

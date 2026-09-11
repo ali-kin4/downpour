@@ -37,10 +37,11 @@ import {
 import type { DownloadItem, DownloadStatus } from "../lib/types";
 import { canPause, canStart } from "../lib/types";
 import { useApp, useItem } from "../store/app";
-import { GRID_TEMPLATE } from "./DownloadList";
+import { COLUMN_GAP, gridTemplate, useColumns } from "../store/columns";
 
 export function DownloadRow({ id }: { id: string }) {
   const item = useItem(id);
+  const widths = useColumns((s) => s.widths);
   const selected = useApp((s) => s.selection.has(id));
   const select = useApp((s) => s.select);
   const run = useApp((s) => s.run);
@@ -78,7 +79,7 @@ export function DownloadRow({ id }: { id: string }) {
           setMenuAt({ x: e.clientX, y: e.clientY });
         }}
         className={clsx(
-          "grid h-14 cursor-default items-center gap-3 border-b border-[var(--border-subtle)] px-3",
+          "grid h-14 cursor-default items-center border-b border-[var(--border-subtle)] px-3",
           "transition-colors duration-100",
           // Opaque, never translucent: Mica behind a dense data grid destroys
           // legibility. Translucency is reserved for the chrome around it.
@@ -86,7 +87,7 @@ export function DownloadRow({ id }: { id: string }) {
             ? "bg-[var(--surface-selected)]"
             : "bg-[var(--surface-raised)] hover:bg-[var(--surface-hover)]",
         )}
-        style={{ gridTemplateColumns: GRID_TEMPLATE }}
+        style={{ gridTemplateColumns: gridTemplate(widths), columnGap: COLUMN_GAP }}
       >
         <input
           type="checkbox"

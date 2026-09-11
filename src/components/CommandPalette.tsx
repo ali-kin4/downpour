@@ -69,9 +69,9 @@ export function CommandPalette() {
       },
       {
         id: "paste",
-        label: "Add links from text",
+        label: "New batch",
         icon: <ClipboardList size={15} />,
-        keywords: "batch paste bulk many clipboard",
+        keywords: "batch paste bulk many clipboard links import list",
         run: () => s().setPasteOpen(true),
       },
       {

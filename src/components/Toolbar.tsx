@@ -38,6 +38,8 @@ function DefaultBar() {
   const hasActive = (stats?.running ?? 0) > 0 || (stats?.queued ?? 0) > 0;
   const hasResumable =
     (stats?.paused ?? 0) > 0 || (stats?.idle ?? 0) > 0 || (stats?.failed ?? 0) > 0;
+  // Anything that will not run again and is just taking up space in the list.
+  const finished = (stats?.completed ?? 0) + (stats?.failed ?? 0);
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] px-3">
@@ -51,9 +53,9 @@ function DefaultBar() {
       <Button
         icon={<ClipboardList size={14} />}
         onClick={() => setPasteOpen(true)}
-        title="Add many links at once (Ctrl V)"
+        title="Paste or import a list of links (Ctrl V)"
       >
-        Add links
+        New batch
       </Button>
 
       <div className="mx-1 h-5 w-px bg-[var(--border-subtle)]" />
@@ -84,14 +86,14 @@ function DefaultBar() {
           Retry failed
         </Button>
       )}
-      {(stats?.completed ?? 0) > 0 && (
+      {finished > 0 && (
         <Button
           variant="ghost"
           icon={<Eraser size={14} />}
-          title="Remove finished rows from the list. Files on disk are kept."
-          onClick={() => void run("Could not clear", api.clearCompleted)}
+          title={`Remove ${finished} finished row${finished === 1 ? "" : "s"} from the list — completed, failed and cancelled. Files on disk are kept.`}
+          onClick={() => void run("Could not clear", api.clearFinished)}
         >
-          Clear completed
+          Clear finished
         </Button>
       )}
 

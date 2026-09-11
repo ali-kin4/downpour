@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Downpour — Grabbed links</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="grabber">
+    <header class="dp-header">
+      <img src="icons/32x32.png" alt="" />
+      <h1>Grabbed links</h1>
+      <span class="dp-sub" id="pageLabel"></span>
+    </header>
+
+    <div class="grab-shell">
+      <!-- Filters -->
+      <div class="grab-toolbar">
+        <div class="grab-filters" id="kindChips" role="group" aria-label="Filter by kind"></div>
+
+        <div class="grab-controls">
+          <div class="grab-search">
+            <input
+              type="text"
+              id="search"
+              placeholder="Match the URL or label…"
+              spellcheck="false"
+              autocomplete="off"
+              aria-label="Filter by text or regular expression"
+            />
+            <label class="checkline" title="Treat the box above as a JavaScript regular expression">
+              <input type="checkbox" id="useRegex" />
+              <span>Regex</span>
+            </label>
+          </div>
+
+          <label class="checkline">
+            <span class="field-inline">Extension</span>
+            <select id="extFilter" aria-label="Filter by file extension"></select>
+          </label>
+        </div>
+
+        <div id="filterMsg" class="msg err" hidden></div>
+      </div>
+
+      <!-- Bulk selection -->
+      <div class="grab-bulk">
+        <button id="selectAll">Select all shown</button>
+        <button id="selectNone">Select none</button>
+        <button id="invert">Invert shown</button>
+        <span class="grab-count" id="count"></span>
+      </div>
+
+      <!-- Results -->
+      <div class="grab-list" id="list" aria-live="polite"></div>
+      <div id="empty" class="grab-empty" hidden></div>
+    </div>
+
+    <!-- Send bar -->
+    <footer class="grab-send">
+      <div class="grab-send-inner">
+        <div id="sendSummary" class="grab-send-summary">Nothing selected</div>
+        <div class="row">
+          <div class="seg" role="radiogroup" aria-label="What to do with the selection">
+            <label class="seg-opt">
+              <input type="radio" name="startMode" value="addonly" checked />
+              <span>Add to queue</span>
+            </label>
+            <label class="seg-opt">
+              <input type="radio" name="startMode" value="start" />
+              <span>Start now</span>
+            </label>
+          </div>
+          <button class="primary" id="send" disabled>Send to Downpour</button>
+        </div>
+      </div>
+      <div id="sendMsg" class="msg" hidden></div>
+    </footer>
+
+    <script src="grabber.js"></script>
+  </body>
+</html>

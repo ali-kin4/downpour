@@ -857,7 +857,9 @@ async fn invalid_settings_are_clamped_rather_than_rejected() {
     s.max_connections_per_download = 250;
     let saved = engine.update_settings(s).unwrap();
     assert_eq!(saved.max_concurrent_downloads, 1);
-    assert_eq!(saved.max_connections_per_download, 32);
+    // Sixteen is a behaviour limit, not a preference: more than that gets the
+    // user rate-limited rather than served faster.
+    assert_eq!(saved.max_connections_per_download, 16);
 }
 
 #[tokio::test]

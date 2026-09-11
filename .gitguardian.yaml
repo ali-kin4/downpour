@@ -1,0 +1,15 @@
+# GitGuardian configuration.
+#
+# The only high-entropy-looking strings in this repository are test vectors and
+# UI fixtures. They authenticate nothing: Downpour's loopback RPC token is
+# generated on first run and stored in the user's local database, and is never
+# committed.
+version: 2
+
+secret:
+  ignored-paths:
+    # Browser-only fixtures for `npm run dev`; never part of a release build.
+    - "src/dev/**"
+  ignored-matches:
+    - name: "SHA-256 of the string 'abc' — an RFC test vector in a hashing test"
+      match: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"

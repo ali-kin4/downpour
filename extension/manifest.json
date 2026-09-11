@@ -13,12 +13,21 @@
     "storage",
     "contextMenus",
     "cookies",
-    "scripting"
+    "scripting",
+    "activeTab"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["modifier-keys.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
   "action": {
     "default_title": "Downpour",
     "default_popup": "popup.html",

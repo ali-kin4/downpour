@@ -99,11 +99,32 @@ export const openPath = (path: string) => call<void>("open_path", { path });
 export const revealPath = (path: string) => call<void>("reveal_path", { path });
 export const pathExists = (path: string) => call<boolean>("path_exists", { path });
 export const appVersion = () => call<string>("app_version");
+/** Brings the main window to the front (used by the progress panel). */
+export const showMainWindow = () => call<void>("show_main_window");
 /** Reads a user-picked .txt of links. Size-capped on the Rust side. */
 export const readTextFile = (path: string) => call<string>("read_text_file", { path });
 /** Pauses everything, flushes resume state, then exits. */
 export const quitApp = () => call<void>("quit_app");
 export const abortPowerAction = () => call<void>("abort_power_action");
+
+// -- Duplicates -------------------------------------------------------------
+
+export interface DuplicateInfo {
+  previous: DownloadItem | null;
+  previousFileExists: boolean;
+  inProgress: DownloadItem | null;
+  conflictingPath: string | null;
+}
+
+/** Checks a URL against the history and the filesystem before adding it. */
+export const checkDuplicate = (url: string, filename?: string | null) =>
+  call<DuplicateInfo>("check_duplicate", { url, filename: filename ?? null });
+
+// -- Progress window --------------------------------------------------------
+
+export const openProgressWindow = () => call<void>("open_progress_window");
+export const closeProgressWindow = () => call<void>("close_progress_window");
+export const progressWindowOpen = () => call<boolean>("progress_window_open");
 
 // -- Category folders -------------------------------------------------------
 
