@@ -12,6 +12,7 @@ import { Toasts } from "./components/Toasts";
 import { Toolbar } from "./components/Toolbar";
 import { useTheme } from "./hooks/useTheme";
 import * as api from "./lib/api";
+import { hostOf } from "./lib/format";
 import { useApp } from "./store/app";
 
 /**
@@ -62,6 +63,7 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [refreshStats]);
 
+  useClipboardCapture();
   useGlobalShortcuts();
 
   if (!ready) {
@@ -107,6 +109,60 @@ export function App() {
       <Toasts />
     </div>
   );
+}
+
+/**
+ * Offers links copied to the clipboard, when the user has opted in.
+ *
+ * A prompt rather than a silent add, unless they explicitly chose auto-add:
+ * an app that starts downloading things because you copied a URL, without
+ * asking once, is an app people uninstall.
+ */
+function useClipboardCapture() {
+  const toast = useApp((s) => s.toast);
+  const run = useApp((s) => s.run);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    void api
+      .onClipboardCapture((capture) => {
+        const count = capture.urls.length;
+        const noun = count === 1 ? "link" : "links";
+
+        if (capture.autoAdded) {
+          toast({
+            tone: "success",
+            title: `Added ${count} ${noun} from the clipboard`,
+            detail: count === 1 ? capture.urls[0] : undefined,
+          });
+          return;
+        }
+
+        toast({
+          tone: "info",
+          title: `${count} ${noun} copied`,
+          detail: count === 1 ? capture.urls[0] : `${new Set(capture.urls.map(hostOf)).size} sites`,
+          action: {
+            label: count === 1 ? "Download it" : `Add all ${count}`,
+            run: () =>
+              void run("Could not add the links", () =>
+                api.addFromText(capture.urls.join("\n"), "start", null),
+              ),
+          },
+        });
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [toast, run]);
 }
 
 /**

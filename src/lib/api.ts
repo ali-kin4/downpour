@@ -107,6 +107,26 @@ export const readTextFile = (path: string) => call<string>("read_text_file", { p
 export const quitApp = () => call<void>("quit_app");
 export const abortPowerAction = () => call<void>("abort_power_action");
 
+// -- Clipboard --------------------------------------------------------------
+
+export interface ClipboardCapture {
+  urls: string[];
+  autoAdded: boolean;
+}
+
+/** Tells the clipboard watcher that this text came from Downpour itself. */
+export const noteClipboardCopy = (text: string) =>
+  call<void>("note_clipboard_copy", { text });
+/** Reads any matching links on the clipboard right now, for Settings to preview. */
+export const readClipboardUrls = () => call<string[]>("read_clipboard_urls");
+
+export async function onClipboardCapture(
+  handler: (capture: ClipboardCapture) => void,
+): Promise<UnlistenFn> {
+  if (!inTauri()) return () => {};
+  return listen<ClipboardCapture>("downpour://clipboard", (e) => handler(e.payload));
+}
+
 // -- Duplicates -------------------------------------------------------------
 
 export interface DuplicateInfo {

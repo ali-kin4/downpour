@@ -33,6 +33,10 @@ export interface Toast {
   tone: "info" | "success" | "error";
   title: string;
   detail?: string;
+  /** One primary action, e.g. "Add 3 links" on a clipboard capture. */
+  action?: { label: string; run: () => void };
+  /** Milliseconds before it clears itself; errors and prompts stay put. */
+  ttlMs?: number;
 }
 
 interface AppState {
@@ -367,9 +371,12 @@ export const useApp = create<AppState>((set, get) => ({
   toast(t) {
     const id = ++toastSeq;
     set({ toasts: [...get().toasts, { ...t, id }] });
-    // Errors stay until dismissed; transient notices clear themselves.
-    if (t.tone !== "error") {
-      setTimeout(() => get().dismissToast(id), 4000);
+    // Errors stay until dismissed, and so does anything offering an action —
+    // a prompt that vanishes before it is read is worse than no prompt.
+    if (t.tone !== "error" && !t.action) {
+      setTimeout(() => get().dismissToast(id), t.ttlMs ?? 4000);
+    } else if (t.action) {
+      setTimeout(() => get().dismissToast(id), t.ttlMs ?? 12_000);
     }
   },
   dismissToast(id) {

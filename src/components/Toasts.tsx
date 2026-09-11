@@ -54,6 +54,18 @@ export function Toasts() {
                   {t.detail}
                 </p>
               )}
+              {t.action && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    t.action?.run();
+                    dismiss(t.id);
+                  }}
+                  className="mt-1.5 rounded-[6px] bg-[var(--accent-soft)] px-2 py-1 text-[11px] font-medium text-[var(--accent)] transition-colors hover:brightness-110"
+                >
+                  {t.action.label}
+                </button>
+              )}
             </div>
             <button
               type="button"

@@ -5,6 +5,7 @@
 //! headlessly. Keeping that line clean is what let the engine ship with 161
 //! tests before a window existed.
 
+mod clipboard;
 mod commands;
 mod media;
 mod power;
@@ -82,6 +83,8 @@ pub fn run() {
             commands::open_progress_window,
             commands::close_progress_window,
             commands::progress_window_open,
+            clipboard::note_clipboard_copy,
+            clipboard::read_clipboard_urls,
             commands::app_version,
             media::yt_dlp_status,
             media::install_yt_dlp,
@@ -133,6 +136,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     state::spawn_event_bridge(handle.clone(), &engine);
     spawn_power_watcher(handle.clone(), &engine);
     spawn_progress_window_watcher(handle.clone(), &engine);
+    clipboard::spawn(handle.clone(), engine.clone());
     tray::build(&handle)?;
     apply_autostart(&handle);
 

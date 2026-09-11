@@ -365,3 +365,61 @@ button:active:not(:disabled) {
   transform: scale(0.985);
   transition: transform 60ms ease;
 }
+
+/* ==========================================================================
+   Accent themes
+
+   One gradient pair drives every tinted surface in the app, so an accent is
+   two variables and nothing else. Each pair is chosen to stay legible as a
+   text colour on both the light and dark surface tokens, which rules out the
+   obvious candidates: pure yellow and pure lime fail on white.
+   ========================================================================== */
+
+:root[data-accent="aurora"] {
+  --color-accent-from: #6366f1;
+  --color-accent-to: #22d3ee;
+}
+:root[data-accent="ember"] {
+  --color-accent-from: #f43f5e;
+  --color-accent-to: #f59e0b;
+}
+:root[data-accent="forest"] {
+  --color-accent-from: #059669;
+  --color-accent-to: #84cc16;
+}
+:root[data-accent="orchid"] {
+  --color-accent-from: #a855f7;
+  --color-accent-to: #ec4899;
+}
+:root[data-accent="slate"] {
+  --color-accent-from: #475569;
+  --color-accent-to: #64748b;
+}
+
+/* The accent also drives the solid `--accent` used for focus rings, active
+   navigation and running progress, so it has to move with the gradient or the
+   two fall out of step. */
+:root[data-accent="ember"] {
+  --accent: #f43f5e;
+  --accent-soft: rgb(244 63 94 / 0.12);
+  --status-running: #f43f5e;
+  --border-focus: #f43f5e;
+}
+:root[data-accent="forest"] {
+  --accent: #059669;
+  --accent-soft: rgb(5 150 105 / 0.12);
+  --status-running: #059669;
+  --border-focus: #059669;
+}
+:root[data-accent="orchid"] {
+  --accent: #a855f7;
+  --accent-soft: rgb(168 85 247 / 0.12);
+  --status-running: #a855f7;
+  --border-focus: #a855f7;
+}
+:root[data-accent="slate"] {
+  --accent: #64748b;
+  --accent-soft: rgb(100 116 139 / 0.14);
+  --status-running: #64748b;
+  --border-focus: #64748b;
+}

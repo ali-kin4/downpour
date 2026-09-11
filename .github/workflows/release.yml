@@ -33,6 +33,12 @@ jobs:
           npm ci
           npm run build
 
+      # A release that fails its own tests must never reach the Releases page.
+      # The suite runs in well under a minute, so there is no reason to skip it
+      # here and hope CI caught it on the branch.
+      - name: Run the test suite
+        run: cargo test --workspace
+
       - name: Install tauri-cli
         run: cargo install tauri-cli --version "^2" --locked
 
@@ -46,12 +52,34 @@ jobs:
 
       # Globbed rather than hardcoded to 0.1.0, so a version bump does not
       # silently produce a release with no files attached.
+      # The extension is unpacked-only (it is not on the Chrome Web Store), so
+      # users need the folder. Shipping it with the installer keeps the two in
+      # step: a protocol change lands in both halves of the same release.
+      - name: Package the browser extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p release
+          if [ ! -f extension/manifest.json ]; then
+            echo "::error::extension/manifest.json is missing"
+            exit 1
+          fi
+          # Validate before packaging: a release containing an extension Chrome
+          # refuses to load is worse than one with no extension at all.
+          node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8'))"
+          for f in extension/*.js; do node --check "$f"; done
+          7z a -tzip "release/downpour-extension-$version.zip" ./extension/* -x'!*.md'
+          ls -l release
+
       - name: Collect artifacts and checksums
         id: artifacts
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release
+          # The extension zip is already here from the previous step; these
+          # only add the installers, and the hash loop below covers all three.
           find target/release/bundle/msi -name '*.msi' -exec cp {} release/ \;
           find target/release/bundle/nsis -name '*-setup.exe' -exec cp {} release/ \;
 
@@ -113,5 +141,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             release/*.msi
-            release/*.exe
+            release/*-setup.exe
+            release/*.zip
             release/checksums.txt
