@@ -80,6 +80,7 @@ pub fn run() {
             commands::category_folders,
             commands::create_category_folders,
             commands::check_duplicate,
+            commands::reset_settings,
             commands::open_progress_window,
             commands::close_progress_window,
             commands::progress_window_open,

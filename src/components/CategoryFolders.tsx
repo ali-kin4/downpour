@@ -51,9 +51,14 @@ export function CategoryFolders({ settings }: { settings: Settings }) {
   const missing = folders.filter((f) => !f.exists).length;
 
   const setFolder = (name: string, folder: string) => {
+    // Read the settings out of the store at commit time rather than closing
+    // over the prop. Editing a folder while a debounced text field elsewhere is
+    // still in flight would otherwise write a snapshot taken before that
+    // field's value landed, silently reverting it.
+    const latest = useApp.getState().settings ?? settings;
     void saveSettings({
-      ...settings,
-      categories: settings.categories.map((c) =>
+      ...latest,
+      categories: latest.categories.map((c) =>
         c.name === name ? { ...c, folder } : c,
       ),
     });

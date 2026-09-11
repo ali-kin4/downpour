@@ -557,3 +557,30 @@ pub fn close_progress_window(app: AppHandle) {
 pub fn progress_window_open(app: AppHandle) -> bool {
     crate::progress_window::is_open(&app)
 }
+
+/// Restores default settings, keeping the few things that are not preferences.
+///
+/// Done in Rust rather than by rebuilding the defaults in TypeScript, because a
+/// hand-copied mirror of `Settings::default()` drifts silently the moment a
+/// default changes on this side.
+///
+/// Three things deliberately survive a reset:
+///
+/// - the **download folder**, which is a place the user chose and may already
+///   hold their files;
+/// - the **pairing token**, because regenerating it would silently unpair the
+///   browser extension for no reason the user could connect to what they just
+///   clicked;
+/// - the **scheduler windows**, which are hand-authored content rather than a
+///   preference, and are tedious to re-enter.
+#[tauri::command]
+pub fn reset_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
+    let current = state.engine.settings();
+    let next = Settings {
+        download_dir: current.download_dir,
+        rpc_token: current.rpc_token,
+        schedule: current.schedule,
+        ..Settings::default()
+    };
+    state.engine.update_settings(next).map_err(err)
+}

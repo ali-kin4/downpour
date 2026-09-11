@@ -277,9 +277,14 @@ pub enum EngineEvent {
         eta_secs: Option<u64>,
         connections: u8,
     },
+    /// Carries the finished item, not just its id. The UI's copy of a download
+    /// is built from events, and nothing else reports the final duration, byte
+    /// count or peak connection count — without this the completion dialog
+    /// reports a 148 MB download as having taken a millisecond.
     Completed {
         id: DownloadId,
         path: PathBuf,
+        item: Box<DownloadItem>,
     },
     Failed {
         id: DownloadId,

@@ -191,14 +191,15 @@ export const useApp = create<AppState>((set, get) => ({
         break;
       }
       case "completed": {
-        const current = get().items[event.id];
-        if (!current) break;
+        // The engine sends the finished item, which is the only place the
+        // final duration, byte count and peak connection count exist. Patching
+        // our own copy instead is what made the completion dialog report a
+        // 148 MB download as taking a millisecond.
         const finished: DownloadItem = {
-          ...current,
+          ...event.item,
           status: "completed",
           speedBps: 0,
           etaSecs: null,
-          downloadedBytes: current.totalBytes ?? current.downloadedBytes,
         };
         const items = { ...get().items, [event.id]: finished };
 

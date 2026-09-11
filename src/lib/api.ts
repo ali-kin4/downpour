@@ -49,6 +49,12 @@ export const getStats = () => call<QueueStats>("get_stats");
 export const getSettings = () => call<Settings>("get_settings");
 export const updateSettings = (settings: Settings) =>
   call<Settings>("update_settings", { settings });
+/**
+ * Restores defaults in the engine, keeping the download folder, the pairing
+ * token and the scheduler windows. Returns the settings that were applied, so
+ * the UI never has to mirror `Settings::default()` and drift from it.
+ */
+export const resetSettings = () => call<Settings>("reset_settings");
 export const probeUrl = (url: string, headers?: Record<string, string>) =>
   call<RemoteInfo>("probe_url", { url, headers: headers ?? null });
 

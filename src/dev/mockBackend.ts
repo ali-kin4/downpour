@@ -211,6 +211,15 @@ const handlers: Record<string, Handler> = {
     conflictingPath: null,
   }),
   show_main_window: () => null,
+  reset_settings: () => {
+    current = { ...settings, downloadDir: current.downloadDir, rpcToken: current.rpcToken };
+    return current;
+  },
+  yt_dlp_status: () => ({ installed: false, version: null, path: null }),
+  read_clipboard_urls: () => [
+    "https://releases.example.com/sample-from-clipboard.zip",
+  ],
+  note_clipboard_copy: () => null,
   open_progress_window: () => null,
   close_progress_window: () => null,
   progress_window_open: () => false,

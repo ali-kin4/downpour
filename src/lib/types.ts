@@ -189,7 +189,7 @@ export type EngineEvent =
       etaSecs: number | null;
       connections: number;
     }
-  | { kind: "completed"; id: DownloadId; path: string }
+  | { kind: "completed"; id: DownloadId; path: string; item: DownloadItem }
   | { kind: "failed"; id: DownloadId; error: string }
   | { kind: "removed"; id: DownloadId }
   | { kind: "schedulerWindow"; open: boolean; label: string | null }

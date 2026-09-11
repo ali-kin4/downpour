@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-11
+
+The first release intended for other people to install.
+
+### Added
+
+- **Clipboard monitoring.** Copy a link anywhere and Downpour offers it, with
+  one click to accept. Off by default; never re-offers the same text; ignores
+  links Downpour itself copied.
+- **Drag and drop.** A link dragged from a browser, or a `.txt` full of them,
+  dropped anywhere on the window.
+- **Five accent themes**, alongside light, dark and follow-Windows.
+- **A settings screen with a search box.** Nine tabs, every control indexed, and
+  matches revealed across tabs as you type.
+- **Reset to defaults**, which deliberately keeps the download folder, the
+  browser pairing token and your scheduler windows — the first is a place you
+  chose, the second would silently unpair your extension, and the third is
+  hand-authored content rather than a preference.
+- The browser extension gained a **link grabber** with a filterable picker,
+  **selection capture**, **per-site rules** and a **hold-Alt-to-bypass** key.
+- **Media pages** via yt-dlp, fetched from its official releases on request and
+  checksum-verified, never bundled.
+
+### Changed
+
+- Hibernate now gets the same cancellable 60-second countdown as shutdown.
+  Sleep still fires immediately, because moving the mouse undoes it.
+
 ### Fixed
 
 - **Segmented downloads now open real TCP connections again.** Over TLS, ALPN
@@ -234,4 +262,5 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   and endpoints for adding a single download, a batch, or a blob of text.
 
 [Unreleased]: https://github.com/ali-kin4/downpour/compare/v0.1.0...HEAD
+[1.0.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.0.0
 [0.1.0]: https://github.com/ali-kin4/downpour/releases/tag/v0.1.0

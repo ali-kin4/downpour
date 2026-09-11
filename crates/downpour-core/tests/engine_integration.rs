@@ -1236,3 +1236,59 @@ async fn downloads_land_in_the_folder_for_their_file_type() {
         engine.get(&id).map(|i| i.dest_dir)
     );
 }
+
+#[tokio::test]
+async fn a_large_download_really_uses_several_connections() {
+    // The whole premise of the engine is that one file is fetched over several
+    // connections at once. Nothing else in the suite asserts that the *reported*
+    // count reflects reality, and the number a user sees is the only evidence
+    // they have that segmentation happened at all.
+    let data = payload(24 * 1024 * 1024);
+    let expected = sha256(&data);
+    let server = common::start(data).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.max_connections_per_download = 8;
+    // Throttled so the transfer lasts long enough for the pump to sample it.
+    settings.speed_limit_bps = 8 * 1024 * 1024;
+    let engine = engine_with(settings);
+
+    let id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "big.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(60), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "download did not finish: {:?}",
+        engine.get(&id).map(|i| (i.status, i.error))
+    );
+
+    let item = engine.get(&id).unwrap();
+    assert_eq!(
+        sha256(&std::fs::read(item.target_path()).unwrap()),
+        expected,
+        "the file must be correct regardless of how it was split"
+    );
+    assert!(
+        item.connections > 1,
+        "a 24 MiB file reported {} connection(s); segmentation is not happening, \
+         or the reported count collapsed when the workers retired",
+        item.connections
+    );
+    assert!(
+        server.state.ranged_count() >= 4,
+        "server saw only {} ranged requests",
+        server.state.ranged_count()
+    );
+}

@@ -130,8 +130,14 @@ impl Default for TransferConfig {
 pub struct TransferProgress {
     pub downloaded: AtomicU64,
     pub total: AtomicU64,
-    /// `u64::MAX` sentinel is never used; 0 means unknown.
+    /// Workers currently inside a request. Drops to zero as they retire.
     pub active_connections: AtomicU64,
+    /// The most that were ever in flight at once.
+    ///
+    /// Reported to the UI instead of the live count, because the live count is
+    /// zero the instant a download finishes: a row that used eight connections
+    /// would otherwise settle on "1" and claim it never segmented at all.
+    pub peak_connections: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -610,9 +616,14 @@ async fn worker_loop(
             }
         };
 
-        ctx.progress
+        let in_flight = ctx
+            .progress
             .active_connections
-            .fetch_add(1, Ordering::Relaxed);
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        ctx.progress
+            .peak_connections
+            .fetch_max(in_flight, Ordering::Relaxed);
         let result = fetch_segment(ctx, url, idx, table, &mut file, config).await;
         ctx.progress
             .active_connections
@@ -848,6 +859,9 @@ async fn plain_transfer(
 ) -> Result<u64> {
     ctx.progress.downloaded.store(0, Ordering::Relaxed);
     ctx.progress.active_connections.store(1, Ordering::Relaxed);
+    ctx.progress
+        .peak_connections
+        .fetch_max(1, Ordering::Relaxed);
 
     let headers = probe::build_headers(&ctx.headers);
     let response = ctx

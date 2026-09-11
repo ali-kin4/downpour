@@ -70,7 +70,7 @@ fn notify_if_needed(app: &AppHandle, event: &EngineEvent) {
     let settings = state.engine.settings();
 
     let (title, body) = match event {
-        EngineEvent::Completed { id, path } => {
+        EngineEvent::Completed { id, path, .. } => {
             if !settings.notify_on_complete {
                 return;
             }

@@ -759,7 +759,10 @@ impl Engine {
                 0 => None,
                 v => Some(v),
             };
-            let connections = run.progress.active_connections.load(Ordering::Relaxed) as u8;
+            // Peak, not live: the live count collapses to zero the moment the
+            // last worker retires, which would make every finished row claim it
+            // used a single connection.
+            let connections = run.progress.peak_connections.load(Ordering::Relaxed) as u8;
             let (speed, eta) = {
                 let mut tracker = run.tracker.lock();
                 let speed = tracker.sample(downloaded);
@@ -1109,10 +1112,15 @@ impl Engine {
                     }
                 }
                 let _ = self.set_status(id, DownloadStatus::Completed, None);
-                self.emit(EngineEvent::Completed {
-                    id: id.to_string(),
-                    path,
-                });
+                // Read the item back *after* the status change so the event
+                // carries the finished state rather than the running one.
+                if let Some(item) = self.inner.items.read().get(id).cloned() {
+                    self.emit(EngineEvent::Completed {
+                        id: id.to_string(),
+                        path,
+                        item: Box::new(item),
+                    });
+                }
             }
             Err(Error::Paused) => {
                 // Back to whichever waiting state it belongs in, so a window
