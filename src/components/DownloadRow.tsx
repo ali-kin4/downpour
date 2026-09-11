@@ -276,7 +276,7 @@ function ProgressBar({
         />
       ) : (
         <div
-          className="h-full rounded-full transition-[width] duration-500 ease-linear"
+          className="dp-progress-fill h-full rounded-full"
           style={{ width: `${value * 100}%`, background: colour }}
         />
       )}

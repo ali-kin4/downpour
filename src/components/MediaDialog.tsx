@@ -115,6 +115,8 @@ export function looksLikeMediaPage(url: string): boolean {
  */
 export function MediaSuggestion({ url }: { url: string }) {
   const [open, setOpen] = useState(false);
+  // Stable, so the dialog's Escape listener does not re-subscribe every render.
+  const close = useCallback(() => setOpen(false), []);
 
   return (
     <>
@@ -136,7 +138,7 @@ export function MediaSuggestion({ url }: { url: string }) {
           Get video
         </Button>
       </div>
-      <MediaDialog url={url} open={open} onClose={() => setOpen(false)} />
+      <MediaDialog url={url} open={open} onClose={close} />
     </>
   );
 }

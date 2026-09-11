@@ -85,7 +85,7 @@ export function CompletionDialog() {
             <div className="relative">
               <FileTile filename={finished.filename} size={56} active />
               <span
-                className="absolute -right-1 -bottom-1 grid size-5 place-items-center rounded-full border-2 border-[var(--surface-raised)]"
+                className="dp-pop absolute -right-1 -bottom-1 grid size-5 place-items-center rounded-full border-2 border-[var(--surface-raised)]"
                 style={{ background: "var(--status-complete)" }}
               >
                 <CheckCircle2 size={11} className="text-white" strokeWidth={3} />

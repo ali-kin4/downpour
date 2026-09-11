@@ -25,6 +25,7 @@ import { formatBytes } from "../lib/format";
 import type { RemoteInfo, StartMode } from "../lib/types";
 import { useApp } from "../store/app";
 import { DuplicateNotice } from "./DuplicateNotice";
+import { looksLikeMediaPage, MediaSuggestion } from "./MediaDialog";
 import { Button, Dialog, Field, Segmented, Spinner, TextArea, TextInput } from "./ui";
 
 const PROBE_DEBOUNCE_MS = 550;
@@ -190,6 +191,8 @@ export function AddDialog() {
         </Field>
 
         <ProbePreview probing={probing} probe={probe} error={probeError} url={url} />
+
+        {looksLikeMediaPage(url.trim()) && <MediaSuggestion url={url.trim()} />}
 
         {duplicate && !dismissedDuplicate && (
           <DuplicateNotice info={duplicate} onDismiss={() => setDismissedDuplicate(true)} />

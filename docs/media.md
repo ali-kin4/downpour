@@ -68,7 +68,8 @@ queue, no scheduler, no per-download speed limit, no pause, and no resume that
 Downpour's UI can see or drive. Routing through our own engine means a video:
 
 - downloads on up to sixteen connections, with work-stealing between them;
-- resumes from its sidecar after a dropped link or a reboot;
+- pauses and resumes from its sidecar, for as long as the link stays valid
+  (see the caveat below — media URLs expire, ordinary ones do not);
 - honours the scheduler, the concurrency cap and the speed limit;
 - appears in the list, the progress window and the tray like anything else;
 - is verified and named by the same code as every other download.
@@ -173,6 +174,19 @@ That is deliberate, not wasteful: signed URLs expire within minutes, so a link
 captured while the user was still choosing a quality is frequently dead by the
 time they click Download.
 
+### Expiring URLs are this design's main failure mode
+
+The same expiry that justifies re-resolving also limits what "resumable" means
+here. Once a media download is in the queue it holds a signed URL with a
+lifetime measured in minutes to hours, so a download that sits behind the
+concurrency cap, is paused overnight, or is resumed after a reboot can come
+back with a **403** rather than the rest of the file. The engine is behaving
+correctly; the link simply died.
+
+The fix, when it is worth building, is to carry the *page* URL and format id
+alongside the download and re-resolve on resume instead of retrying the stale
+direct URL. Downpour does not do that today — see Known gaps.
+
 ---
 
 ## Treating yt-dlp as the hostile external process it is
@@ -231,6 +245,11 @@ The whole route is wired into the Add dialog with one line:
 
 ## Known gaps
 
+- **Signed URLs expire.** A media download left queued or paused for too long
+  will fail with a 403 on resume, because the direct URL it holds has died.
+  It has to be re-added from the page. Fixing this properly means storing the
+  page URL and format id with the download and re-resolving on resume, which
+  needs a field the engine does not have yet.
 - **No muxing.** By design; see above. Requires ffmpeg.
 - **No HLS/DASH assembly.** Requires a segment-stitching downloader, which is a
   different engine from a byte-range one.

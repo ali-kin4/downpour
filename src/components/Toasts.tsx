@@ -36,7 +36,7 @@ export function Toasts() {
           <div
             key={t.id}
             className={clsx(
-              "dp-enter pointer-events-auto flex items-start gap-2.5 rounded-[var(--radius-card)]",
+              "dp-toast-enter pointer-events-auto flex items-start gap-2.5 rounded-[var(--radius-card)]",
               "border border-[var(--border-subtle)] bg-[var(--surface-raised)] p-3",
               "shadow-[var(--shadow-overlay)]",
             )}

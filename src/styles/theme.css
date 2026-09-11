@@ -264,3 +264,104 @@ textarea,
 .dp-enter {
   animation: dp-fade-in 160ms var(--ease-out-expo);
 }
+
+/* ==========================================================================
+   Motion
+
+   Two rules, and they are what keep this feeling like a tool rather than a
+   toy: motion only ever communicates a *state change*, and nothing decorative
+   moves. A download manager is looked at for hours; anything that animates
+   without meaning becomes an irritant by the second hour.
+
+   Durations are short (120-220ms) and easings are asymmetric — quick to start,
+   settling at the end — which reads as responsive rather than sluggish.
+   ========================================================================== */
+
+@keyframes dp-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes dp-slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes dp-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes dp-pop {
+  0% {
+    transform: scale(0.86);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* A newly added download slides in rather than appearing, so a batch of
+   twenty reads as arriving rather than as the list blinking. */
+.dp-row-enter {
+  animation: dp-row-in 200ms var(--ease-out-expo) both;
+}
+
+.dp-slide-down {
+  animation: dp-slide-down 180ms var(--ease-out-expo) both;
+}
+
+.dp-toast-enter {
+  animation: dp-toast-in 220ms var(--ease-spring) both;
+}
+
+/* Used on the completion tick and on count badges that change. */
+.dp-pop {
+  animation: dp-pop 260ms var(--ease-spring) both;
+}
+
+/* Progress bars advance smoothly, but only forward. A resumed download that
+   jumps backwards should snap, not glide, or the bar looks like it is
+   rewinding. */
+.dp-progress-fill {
+  transition: width 480ms linear;
+}
+
+/* Interactive surfaces settle rather than snap. */
+button,
+[role="tab"],
+[role="menuitem"],
+[role="switch"] {
+  transition:
+    background-color 130ms ease,
+    color 130ms ease,
+    border-color 130ms ease,
+    opacity 130ms ease;
+}
+
+button:active:not(:disabled) {
+  /* A tiny, near-instant depress. Enough to feel the click land. */
+  transform: scale(0.985);
+  transition: transform 60ms ease;
+}
