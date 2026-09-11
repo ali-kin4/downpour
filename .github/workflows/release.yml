@@ -39,16 +39,17 @@ jobs:
       - name: Run the test suite
         run: cargo test --workspace
 
-      - name: Install tauri-cli
-        run: cargo install tauri-cli --version "^2" --locked
-
       # A direct `cargo tauri build` rather than tauri-apps/tauri-action.
       # tauri-action wants to own release creation itself, which would fight the
       # separate checksum, changelog-notes and prerelease steps below; and the
       # artifact paths under target/release/bundle/ are deterministic, so there
       # is nothing tauri-action would give us that we need here.
+      # `npm ci` above already installed @tauri-apps/cli, which is a pinned
+      # devDependency and ships a prebuilt binary. `cargo install tauri-cli`
+      # compiled the same tool from source on every release for roughly eight
+      # minutes of runner time and could drift from the version used locally.
       - name: Build installers
-        run: cargo tauri build
+        run: npx tauri build
 
       # Globbed rather than hardcoded to 0.1.0, so a version bump does not
       # silently produce a release with no files attached.
@@ -69,7 +70,10 @@ jobs:
           # refuses to load is worse than one with no extension at all.
           node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8'))"
           for f in extension/*.js; do node --check "$f"; done
-          7z a -tzip "release/downpour-extension-$version.zip" ./extension/* -x'!*.md'
+          # README.md is included deliberately: it is the load-unpacked and
+          # pairing guide, and it is the first thing someone opening this zip
+          # needs.
+          7z a -tzip "release/downpour-extension-$version.zip" ./extension/*
           ls -l release
 
       - name: Collect artifacts and checksums

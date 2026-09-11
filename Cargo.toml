@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/downpour-core", "crates/downpour-cli", "src-tauri"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 rust-version = "1.82"
 license = "MIT"
@@ -34,7 +34,11 @@ percent-encoding = "2"
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
+# Thin LTO rather than fat. Fat LTO plus codegen-units = 1 took roughly fifty
+# minutes on a two-core CI runner against four locally, to buy a percent or two
+# of size on a program whose bottleneck is a network socket. Thin LTO keeps
+# nearly all of the benefit at a fraction of the build time.
+lto = "thin"
+codegen-units = 4
 panic = "abort"
 strip = true

@@ -26,6 +26,12 @@
       "js": ["modifier-keys.js"],
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["video-overlay.js"],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "action": {

@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-11
+
+Everything here landed hours after the 1.0.0 tag was cut, so 1.0.0's published
+installers do not contain it. 1.0.1 is the first release whose artifacts match
+the source.
+
+### Added
+
+- **A video button in the browser**, in the spirit of IDM's. It appears over a
+  video on hover or after a couple of seconds of playback, never on page load,
+  never in fullscreen, and never over a decorative or DRM-protected player.
+  Clicking it lists the real qualities with sizes, sound-carrying formats
+  first. Off per-site or entirely, in one click from its own menu.
+- **`POST /api/v1/media/probe` and `/api/v1/media/resolve`**, so the extension
+  can list qualities itself. yt-dlp was previously reachable only from the
+  app's own window.
+- **A 24-hour clock face for scheduler windows.** Midnight sits at the top, so
+  an overnight window is one unbroken sweep through it rather than two numbers
+  to subtract. Night hours are shaded and the span is written in the middle.
+
+### Fixed
+
+- **The progress panel's percentage never moved.** Its window was missing from
+  the capability file, so it was denied permission to listen for events.
+  Custom commands are not permission-gated, which is why it rendered its first
+  frame correctly and then froze — the most confusing possible symptom.
+- **Sending a video page to `/api/v1/downloads` saved the page's HTML** under
+  the video's name and reported success. Known media pages are now refused
+  with an explanation and a pointer at the probe endpoint.
+- The progress panel no longer forces itself above other windows, and closing
+  it closes it rather than hiding it. It has never stopped a download; the
+  button now says so.
+
+### Changed
+
+- Release builds use thin LTO. Fat LTO took about fifty minutes on a two-core
+  CI runner to buy a percent or two on a program bottlenecked by a socket.
+- The release workflow builds with the pinned npm Tauri CLI instead of
+  compiling `tauri-cli` from source on every run, and the extension zip now
+  includes its README, which is the install guide.
+
 ## [1.0.0] - 2026-09-11
 
 The first release intended for other people to install.
@@ -262,5 +303,6 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   and endpoints for adding a single download, a batch, or a blob of text.
 
 [Unreleased]: https://github.com/ali-kin4/downpour/compare/v0.1.0...HEAD
+[1.0.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.0.1
 [1.0.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.0.0
 [0.1.0]: https://github.com/ali-kin4/downpour/releases/tag/v0.1.0

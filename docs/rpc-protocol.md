@@ -161,6 +161,7 @@ Adds one download.
 | `400` | `{"error":"invalid_url"}` | Not http/https, or unparseable. |
 | `401` | `{"error":"unauthorized"}` | Missing or wrong token. |
 | `413` | `{"error":"payload_too_large"}` | Body over 256 KB. |
+| `422` | `{"error":"media_page","detail":"…"}` | The URL is a known media *page*, not a file, and `startMode` was `start`. Downloading it would save the page's HTML under the video's name and report success. Probe it instead, or resend with `addonly` to hand it to the app. |
 | `500` | `{"error":"internal","detail":"…"}` | Anything else. |
 
 ### `POST /api/v1/downloads/batch` — authenticated
@@ -192,6 +193,49 @@ count.
 
 Malformed entries are **skipped, not fatal** — one bad link in a page scrape
 must not discard the other nineteen. `rejected` reports how many were dropped.
+
+### `POST /api/v1/media/probe` — authenticated
+
+Lists the formats available for a media *page* (a YouTube watch URL, a Vimeo
+page). Requires yt-dlp, which the app fetches on request and never bundles.
+
+```json
+{ "url": "https://www.youtube.com/watch?v=…" }
+```
+
+Returns `title`, `durationSecs`, `thumbnail`, `uploader`, `extractor`,
+`webpageUrl`, `isLive` and a `formats` array. Each format carries:
+
+| Field | Notes |
+|---|---|
+| `formatId` | Pass this back to `/media/resolve`. |
+| `ext`, `resolution`, `height`, `fps` | `fps` is worth showing only when it differs across the list. |
+| `filesize`, `filesizeIsEstimate` | Say "about" when the estimate flag is set rather than printing a precise lie. |
+| `vcodec`, `acodec` | |
+| `progressive` | Both audio and video in one stream. **Only these download correctly** — the rest would need ffmpeg to mux, which Downpour deliberately does not ship. |
+| `directHttp` | A plain HTTP resource. HLS and DASH manifests cannot be handed to a byte-range engine at all. |
+| `protocol`, `label`, `note` | |
+
+Field names are the Rust struct names camelCased; `src-tauri/src/media.rs` is
+authoritative if this table and the code ever disagree.
+
+### `POST /api/v1/media/resolve` — authenticated
+
+Turns a chosen format into something downloadable.
+
+```json
+{ "url": "https://www.youtube.com/watch?v=…", "formatId": "22" }
+```
+
+Returns `url`, `headers`, `filename`, `filesize`, `ext` and `progressive`.
+**Pass `headers` straight through to `/api/v1/downloads`.** They routinely
+include `Referer` and `User-Agent`, and omitting them is a `403`, not a slow
+download. The URL is often signed and short-lived, so resolve immediately
+before adding rather than caching it.
+
+**Errors:** `502` with `{"error":"media_unavailable","detail":"…"}`, where the
+detail is yt-dlp's own message — "Private video", "Unsupported URL", or that it
+is not installed. Show it; it is nearly always actionable.
 
 ### `POST /api/v1/show` — authenticated
 

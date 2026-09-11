@@ -81,6 +81,57 @@
           <div id="appRulesPreview" class="msg" hidden style="margin-top: 10px"></div>
         </section>
 
+        <!-- Video button -->
+        <section class="card">
+          <h2>Video button</h2>
+          <div class="row between" style="margin-top: 8px">
+            <div>
+              <div class="status-text">Show a download button over videos</div>
+              <p class="hint">
+                A small pill fades in at the top-right of a video when you hover it, or after it
+                has been playing for about two seconds. It never appears on page load, never over a
+                page without a real video, and never in fullscreen. Clicking it lists what can be
+                downloaded; everything else on the page is left alone.
+              </p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="videoOverlayEnabled" />
+              <span class="track"></span>
+            </label>
+          </div>
+
+          <div class="stack" style="margin-top: 12px">
+            <div>
+              <label class="field" for="videoOverlayHosts">Never show it on these sites</label>
+              <textarea
+                id="videoOverlayHosts"
+                class="mono hostlist"
+                spellcheck="false"
+                placeholder="netflix.com&#10;example.com"
+              ></textarea>
+              <p class="hint">
+                One host per line (or comma separated); subdomains are included. The button's own
+                “Don’t show this on …” entry adds to this list, and takes effect in every open tab
+                straight away.
+              </p>
+            </div>
+            <div class="row wrap">
+              <button class="primary" id="saveVideoHosts">Save video sites</button>
+              <span id="videoMsg" class="hint"></span>
+            </div>
+          </div>
+
+          <p class="hint" style="margin-top: 10px">
+            A video file the page links to directly is offered straight away — no desktop app
+            needed. For a player that streams in pieces (YouTube and most large sites) the button
+            asks Downpour for the real quality list, which needs <strong>yt-dlp</strong> installed
+            in the app under <strong>Settings → Video pages</strong>. Formats with video
+            <em>and</em> sound are listed first; anything that would arrive without audio is put
+            behind a “show more” link and labelled, because Downpour bundles no ffmpeg to join the
+            two back together.
+          </p>
+        </section>
+
         <!-- Bypass key -->
         <section class="card">
           <h2>Bypass key</h2>

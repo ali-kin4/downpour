@@ -65,6 +65,8 @@ pub async fn serve(engine: Engine, app: tauri::AppHandle) -> Option<u16> {
         .route("/api/v1/downloads/batch", post(add_batch))
         .route("/api/v1/downloads/text", post(add_text))
         .route("/api/v1/show", post(show_window))
+        .route("/api/v1/media/probe", post(media_probe))
+        .route("/api/v1/media/resolve", post(media_resolve))
         // A catch-all so preflight to an unknown path still gets CORS headers
         // rather than a bare 404 the extension cannot diagnose.
         .fallback(not_found)
@@ -260,6 +262,19 @@ struct BatchBody {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MediaProbeBody {
+    url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaResolveBody {
+    url: String,
+    format_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct TextBody {
     text: String,
     #[serde(default)]
@@ -322,6 +337,22 @@ async fn add_one(
 ) -> Result<(StatusCode, Json<AddedOne>), Response> {
     if !is_http_url(&item.url) {
         return Err(bad_request("invalid_url"));
+    }
+    // A media *page* is not a file. Queueing one downloads the HTML and reports
+    // success, which is worse than refusing: the user gets a 300 KB ".html"
+    // named after the video and no error anywhere.
+    if looks_like_media_page(&item.url) && item.start_mode == StartMode::Start {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorBody {
+                error: "media_page".into(),
+                detail: Some(
+                    "This looks like a video page rather than a file. Use                      /api/v1/media/probe to list its formats, or send it with                      startMode \"addonly\" to hand it to the app."
+                        .into(),
+                ),
+            }),
+        )
+            .into_response());
     }
     let id = state
         .engine
@@ -409,6 +440,57 @@ async fn show_window(State(state): State<RpcState>) -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
+/// Lists the formats available for a media page.
+///
+/// The browser extension needs this to show a quality menu with sizes. Without
+/// it the extension can only hand the page URL over blind, and a watch page is
+/// not a file: posting one to `/downloads` used to save the page's HTML and
+/// report success.
+async fn media_probe(
+    State(state): State<RpcState>,
+    Json(body): Json<MediaProbeBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    if !is_http_url(&body.url) {
+        return Err(bad_request("invalid_url"));
+    }
+    let info = crate::media::probe_media(state.app.clone(), body.url)
+        .await
+        .map_err(|e| media_error(&e))?;
+    Ok(Json(
+        serde_json::to_value(info).map_err(|e| internal(&e.to_string()))?,
+    ))
+}
+
+/// Turns a chosen format into a direct URL plus the headers it requires.
+async fn media_resolve(
+    State(state): State<RpcState>,
+    Json(body): Json<MediaResolveBody>,
+) -> Result<Json<serde_json::Value>, Response> {
+    if !is_http_url(&body.url) {
+        return Err(bad_request("invalid_url"));
+    }
+    let resolved = crate::media::resolve_media(state.app.clone(), body.url, body.format_id)
+        .await
+        .map_err(|e| media_error(&e))?;
+    Ok(Json(
+        serde_json::to_value(resolved).map_err(|e| internal(&e.to_string()))?,
+    ))
+}
+
+/// yt-dlp failures are the user's problem to fix (not installed, unsupported
+/// site, private video), so its own message is passed through rather than
+/// flattened into a generic 500.
+fn media_error(detail: &str) -> Response {
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(ErrorBody {
+            error: "media_unavailable".into(),
+            detail: Some(detail.to_string()),
+        }),
+    )
+        .into_response()
+}
+
 async fn not_found() -> Response {
     (
         StatusCode::NOT_FOUND,
@@ -418,6 +500,40 @@ async fn not_found() -> Response {
         }),
     )
         .into_response()
+}
+
+/// Hosts whose URLs are pages describing media rather than the media itself.
+///
+/// Deliberately a small, obvious list rather than a clever heuristic: a false
+/// positive refuses a download the user asked for, which is far worse than a
+/// false negative (they simply get the page and can retry through the app).
+fn looks_like_media_page(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let host = parsed.host_str().unwrap_or("").trim_start_matches("www.");
+    const PAGE_HOSTS: &[&str] = &[
+        "youtube.com",
+        "youtu.be",
+        "m.youtube.com",
+        "vimeo.com",
+        "dailymotion.com",
+        "twitch.tv",
+        "soundcloud.com",
+        "bilibili.com",
+        "nicovideo.jp",
+        "rumble.com",
+        "odysee.com",
+    ];
+    if !PAGE_HOSTS
+        .iter()
+        .any(|h| host == *h || host.ends_with(&format!(".{h}")))
+    {
+        return false;
+    }
+    // A direct media file served from one of those hosts is still a file.
+    let path = parsed.path().to_ascii_lowercase();
+    !path.ends_with(".mp4") && !path.ends_with(".webm") && !path.ends_with(".m4a")
 }
 
 fn is_http_url(url: &str) -> bool {
@@ -517,6 +633,25 @@ mod tests {
             .get(header::ACCESS_CONTROL_ALLOW_METHODS)
             .is_some());
         assert_eq!(r.headers().get(header::VARY).unwrap(), "Origin");
+    }
+
+    #[test]
+    fn media_pages_are_recognised_but_direct_files_are_not() {
+        assert!(looks_like_media_page("https://www.youtube.com/watch?v=abc"));
+        assert!(looks_like_media_page("https://youtu.be/abc"));
+        assert!(looks_like_media_page("https://vimeo.com/12345"));
+        assert!(looks_like_media_page("https://m.youtube.com/watch?v=abc"));
+
+        // A real file, even on one of those hosts, is still a file.
+        assert!(!looks_like_media_page("https://youtube.com/clip/thing.mp4"));
+        // Everything else is a download, and a false positive would refuse a
+        // download the user explicitly asked for.
+        assert!(!looks_like_media_page("https://example.com/video.mp4"));
+        assert!(!looks_like_media_page("https://notyoutube.com/watch?v=abc"));
+        assert!(!looks_like_media_page(
+            "https://github.com/a/b/releases/x.zip"
+        ));
+        assert!(!looks_like_media_page("not a url"));
     }
 
     #[test]

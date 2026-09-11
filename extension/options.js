@@ -98,6 +98,8 @@ async function load() {
   $('excludeExtensions').value = formatList(prefs.excludeExtensions);
   $('excludeHosts').value = formatList(prefs.excludeHosts);
   $('bypassModifier').value = String(prefs.bypassModifier || 'alt');
+  $('videoOverlayEnabled').checked = prefs.videoOverlayEnabled !== false;
+  $('videoOverlayHosts').value = formatHostList(prefs.videoOverlayHosts);
   $('siteBlocklist').value = formatHostList(prefs.siteBlocklist);
   $('siteAllowlist').value = formatHostList(prefs.siteAllowlist);
   $('version').textContent = status.appVersion ? 'app v' + status.appVersion : '';
@@ -234,6 +236,44 @@ $('useAppRules').addEventListener('change', async (e) => {
     e.target.checked = !e.target.checked;
     reflectRuleSource();
     setMsg('tokenMsg', 'Could not save: ' + err.message, 'err');
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Video button
+ * ------------------------------------------------------------------ */
+
+$('videoOverlayEnabled').addEventListener('change', async (e) => {
+  try {
+    // Open tabs pick this up through chrome.storage.onChanged, so the button
+    // appears or disappears without anyone reloading anything.
+    await send({ type: 'videoOverlaySetEnabled', on: e.target.checked });
+    $('videoMsg').textContent = e.target.checked
+      ? 'On. It still only appears on hover or after a couple of seconds of playback.'
+      : 'Off everywhere, including tabs that are already open.';
+    setTimeout(() => {
+      $('videoMsg').textContent = '';
+    }, 4000);
+  } catch (err) {
+    e.target.checked = !e.target.checked;
+    $('videoMsg').textContent = 'Could not save: ' + err.message;
+  }
+});
+
+$('saveVideoHosts').addEventListener('click', async () => {
+  const hosts = parseHostList($('videoOverlayHosts').value);
+  // Show what was actually stored — the parser strips schemes, paths and www.
+  $('videoOverlayHosts').value = formatHostList(hosts);
+  try {
+    await send({ type: 'setPrefs', prefs: { videoOverlayHosts: hosts } });
+    $('videoMsg').textContent = hosts.length
+      ? 'Saved. The button is hidden on ' + hosts.length + ' site(s).'
+      : 'Saved. The button can appear on any site.';
+    setTimeout(() => {
+      $('videoMsg').textContent = '';
+    }, 4000);
+  } catch (err) {
+    $('videoMsg').textContent = 'Could not save: ' + err.message;
   }
 });
 

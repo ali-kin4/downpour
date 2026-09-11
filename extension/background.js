@@ -33,6 +33,14 @@ const PORT_MAX = 47123;
 
 const PROBE_TIMEOUT_MS = 1200; // per-port /health probe
 const REQUEST_TIMEOUT_MS = 8000; // normal API call
+
+// /api/v1/media/probe and /media/resolve both SPAWN yt-dlp and wait for it.
+// The app bounds a probe at 90s; 45s is the point past which a user watching a
+// spinner has concluded the feature is broken anyway, and a timeout here just
+// means the menu says so instead of hanging. Never use this for anything that
+// is not a media route — an 8s ceiling is what keeps the ordinary hand-off
+// from stalling the download UI.
+const MEDIA_TIMEOUT_MS = 45000;
 const CAPTURE_TTL_MS = 30000; // protocol says cache /api/v1/capture ~30s
 
 // Protocol caps the body at 256 KB. Stay well under it: cookies are long and
@@ -88,7 +96,14 @@ const DEFAULT_PREFS = {
   // "app rules vs browser rules" switch, because "never capture from this
   // site" has to mean never.
   siteBlocklist: [], // hosts we must not capture from
-  siteAllowlist: [] // if non-empty, capture ONLY from these hosts
+  siteAllowlist: [], // if non-empty, capture ONLY from these hosts
+
+  // The floating "download this video" pill drawn over video elements by
+  // video-overlay.js. Its own switches, deliberately separate from capture:
+  // someone can want their downloads intercepted without wanting anything
+  // drawn on top of the pages they visit.
+  videoOverlayEnabled: true,
+  videoOverlayHosts: [] // hosts where the pill is suppressed
 };
 
 /**
@@ -163,6 +178,14 @@ function describeApiError(status, body) {
       return 'Request too large for Downpour (over 256 KB)';
     case 'internal':
       return 'Downpour hit an internal error' + (detail ? ': ' + detail : '');
+    // yt-dlp's own stderr — "Video unavailable", "Sign in to confirm your
+    // age", "Unsupported URL", "yt-dlp is not installed at …". It is the only
+    // useful information in the failure, so it is passed through untouched
+    // rather than flattened into "probe failed".
+    case 'media_unavailable':
+      return detail || 'Downpour could not read this video page';
+    case 'media_page':
+      return 'That is a video page, not a file — ask Downpour for its formats instead';
     default:
       return 'Downpour returned HTTP ' + status + (code ? ' (' + code + ')' : '');
   }
@@ -464,7 +487,10 @@ async function resolvePort() {
  * really does mean "nothing is listening", which is what makes the
  * offline branch trustworthy.
  */
-async function apiRequest(path, { method = 'GET', body = null, retryOnRescan = true } = {}) {
+async function apiRequest(
+  path,
+  { method = 'GET', body = null, retryOnRescan = true, timeoutMs = REQUEST_TIMEOUT_MS } = {}
+) {
   const token = await getToken();
   if (!token) {
     await setStatus({ state: STATE.noToken });
@@ -485,7 +511,7 @@ async function apiRequest(path, { method = 'GET', body = null, retryOnRescan = t
 
   let res;
   try {
-    res = await fetchWithTimeout(baseUrl(port) + path, init, REQUEST_TIMEOUT_MS);
+    res = await fetchWithTimeout(baseUrl(port) + path, init, timeoutMs);
   } catch (err) {
     // The cached port may simply be stale (app restarted onto another port).
     // Re-probe the whole range once, then give up and report offline.
@@ -496,7 +522,7 @@ async function apiRequest(path, { method = 'GET', body = null, retryOnRescan = t
         await setStatus({ state: STATE.offline, port: null, appVersion: null });
         throw new OfflineError();
       }
-      return apiRequest(path, { method, body, retryOnRescan: false });
+      return apiRequest(path, { method, body, retryOnRescan: false, timeoutMs });
     }
     await setStatus({ state: STATE.offline, port: null, appVersion: null });
     throw new OfflineError(err && err.message);
@@ -1486,7 +1512,266 @@ async function readGrab(id) {
 }
 
 /* ------------------------------------------------------------------ *
- * Messages from popup / options
+ * Video overlay — the pill drawn over videos by video-overlay.js
+ * ------------------------------------------------------------------ */
+
+/**
+ * Content-script-visible configuration. Deliberately two booleans and nothing
+ * else: the overlay has no business knowing the token, the port, the capture
+ * rules or the host lists, and a content script runs in every page the user
+ * visits. The less it can be asked for, the less a compromised page could
+ * learn if it ever found a way to impersonate one.
+ */
+async function videoOverlayConfig(host) {
+  const prefs = await getPrefs();
+  const clean = String(host || '').toLowerCase();
+  return {
+    enabled: prefs.videoOverlayEnabled !== false,
+    siteBlocked: hostExcluded(clean, normaliseHostList(prefs.videoOverlayHosts))
+  };
+}
+
+/**
+ * Size of a directly-downloadable video file.
+ *
+ * HEAD first; a server that answers HEAD with 405 (or with no length) gets a
+ * one-byte ranged GET, and the total comes out of Content-Range. Both are
+ * allowed to fail: hotlink protection, a missing Content-Length on a chunked
+ * response, or a CORS policy that does not expose the header are all ordinary,
+ * and the overlay renders the row without a size rather than hiding it.
+ *
+ * `credentials: 'include'` rather than a Cookie header, because Cookie is a
+ * forbidden header name for fetch — the browser attaches the jar itself. The
+ * same reason applies to Referer, which cannot be set here at all; a server
+ * that demands one simply yields no size.
+ */
+const sizeProbeCache = new Map(); // url -> { bytes, at }
+const SIZE_CACHE_TTL_MS = 5 * 60 * 1000;
+const SIZE_PROBE_TIMEOUT_MS = 6000;
+
+async function probeFileSize(url) {
+  if (!isHttpUrl(url)) return { bytes: null };
+
+  const cached = sizeProbeCache.get(url);
+  if (cached && Date.now() - cached.at < SIZE_CACHE_TTL_MS) return { bytes: cached.bytes };
+
+  let bytes = null;
+  try {
+    const res = await fetchWithTimeout(
+      url,
+      { method: 'HEAD', credentials: 'include', cache: 'no-store', redirect: 'follow' },
+      SIZE_PROBE_TIMEOUT_MS
+    );
+    if (res.ok) {
+      const len = Number(res.headers.get('content-length'));
+      if (len > 0) bytes = len;
+    }
+  } catch (_) {
+    /* fall through to the ranged GET */
+  }
+
+  if (bytes === null) {
+    try {
+      const res = await fetchWithTimeout(
+        url,
+        {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+          redirect: 'follow',
+          headers: { Range: 'bytes=0-0' }
+        },
+        SIZE_PROBE_TIMEOUT_MS
+      );
+      const range = res.headers.get('content-range');
+      const m = range && /\/(\d+)\s*$/.exec(range);
+      if (m) bytes = Number(m[1]);
+      // One byte of body, but leaving it unread keeps the connection open.
+      if (res.body && typeof res.body.cancel === 'function') {
+        res.body.cancel().catch(() => {});
+      }
+    } catch (_) {
+      /* no size available; that is a normal outcome */
+    }
+  }
+
+  if (sizeProbeCache.size > 200) sizeProbeCache.clear();
+  sizeProbeCache.set(url, { bytes, at: Date.now() });
+  return { bytes };
+}
+
+/* ---- media probe / resolve ---- */
+
+/**
+ * Formats for a media page.
+ *
+ * FAILURE IS DATA HERE, NOT AN EXCEPTION. A `502 media_unavailable` is the
+ * single most likely outcome on a random page — yt-dlp not installed, an
+ * unsupported site, a private video — and it is something the menu renders,
+ * not something that breaks it. So it comes back as a result object carrying
+ * yt-dlp's own words. Offline and auth errors still throw: those are problems
+ * with the extension's link to the app, not with the page, and the pill
+ * already has wording for them.
+ */
+const mediaProbeCache = new Map(); // pageUrl -> { result, at }
+const MEDIA_PROBE_TTL_MS = 3 * 60 * 1000;
+
+async function videoOverlayProbe(url) {
+  if (!isHttpUrl(url)) throw new Error('That page has no address Downpour can read.');
+
+  const cached = mediaProbeCache.get(url);
+  if (cached && Date.now() - cached.at < MEDIA_PROBE_TTL_MS) return cached.result;
+
+  let result;
+  try {
+    const info = await apiRequest('/api/v1/media/probe', {
+      method: 'POST',
+      body: { url },
+      timeoutMs: MEDIA_TIMEOUT_MS
+    });
+    await clearError();
+    result = { ok: true, info };
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 502) {
+      const detail = err.body && typeof err.body.detail === 'string' ? err.body.detail : '';
+      result = {
+        ok: false,
+        detail: detail || 'Downpour could not read this page.',
+        // Worth its own case: it is the one failure the user can fix in thirty
+        // seconds, and the fix is a button in the app rather than a mystery.
+        notInstalled: /not installed/i.test(detail)
+      };
+    } else {
+      throw err;
+    }
+  }
+
+  // Only metadata is cached. `resolve` is always run fresh because the direct
+  // URLs it returns are signed and expire in minutes — see docs/media.md.
+  //
+  // "yt-dlp is not installed" is the one answer NOT worth remembering: it is
+  // the failure the user is most likely to go and fix in the next thirty
+  // seconds, and serving it back for three minutes afterwards makes the fix
+  // look like it did not work. Other failures — unsupported site, private
+  // video — are stable, and caching them is what stops every menu open on a
+  // non-media page from spawning yt-dlp again.
+  if (!result.ok && result.notInstalled) return result;
+
+  if (mediaProbeCache.size > 24) mediaProbeCache.clear();
+  mediaProbeCache.set(url, { result, at: Date.now() });
+  return result;
+}
+
+/**
+ * Turn a chosen format into a queued download.
+ *
+ * THE HEADERS FROM `resolve` GO STRAIGHT THROUGH, UNMERGED. They are the exact
+ * set yt-dlp used, the app has already stripped the ones that would corrupt a
+ * ranged download (`Accept-Encoding` above all), and the URLs are signed CDN
+ * links that answer 403 without them. Folding our own Cookie/Referer/UA in on
+ * top would be guessing against a source that already knows the answer.
+ */
+async function videoOverlayResolve(pageUrl, formatId, pageTitle) {
+  if (!isHttpUrl(pageUrl)) throw new Error('That page has no address Downpour can read.');
+  if (!formatId) throw new Error('No format was chosen.');
+
+  const resolved = await apiRequest('/api/v1/media/resolve', {
+    method: 'POST',
+    body: { url: pageUrl, formatId: String(formatId) },
+    timeoutMs: MEDIA_TIMEOUT_MS
+  });
+
+  if (!resolved || !isHttpUrl(resolved.url)) {
+    throw new Error('Downpour returned no usable address for that format.');
+  }
+
+  const payload = {
+    url: resolved.url,
+    headers: resolved.headers && typeof resolved.headers === 'object' ? resolved.headers : {},
+    startMode: 'start',
+    source: 'extension-video-overlay',
+    pageTitle: typeof pageTitle === 'string' ? pageTitle.slice(0, 300) : undefined
+  };
+  const filename = baseNameOf(String(resolved.filename || ''));
+  if (filename) payload.filename = filename;
+  if (Number(resolved.filesize) > 0) payload.sizeHint = Number(resolved.filesize);
+
+  const result = await postDownload(payload);
+  await clearError();
+  await flashBadge('1');
+  return Object.assign({ mode: 'format' }, result);
+}
+
+/**
+ * Hand a chosen video to the app.
+ *
+ * TWO MODES, AND THE DIFFERENCE MATTERS.
+ *
+ * `file` — a real media file the browser can see the URL of. Queued with
+ * `start`, with the full header set, exactly like an intercepted download.
+ * Nothing else is needed: no yt-dlp, no probe, no app-side resolution.
+ *
+ * `page` — the URL of a page whose video is streamed, used ONLY when the probe
+ * could not answer. It is sent with **`addonly`** and the app window is
+ * raised, so the link lands visibly in the queue, inert, for the user to deal
+ * with in the app itself.
+ *
+ * `addonly` is not a preference. `POST /api/v1/downloads` now rejects a
+ * recognised media page sent with `start` (422 `media_page`) precisely because
+ * queueing one used to save the watch page's HTML and report success. Sending
+ * it added-but-not-started is the one way this route can carry a page URL at
+ * all, and it is the fallback rather than the main path for the same reason.
+ */
+async function videoOverlaySend(msg) {
+  const url = String(msg && msg.url ? msg.url : '');
+  if (!isHttpUrl(url)) throw new Error('That video has no downloadable address.');
+
+  const pageTitle = typeof msg.pageTitle === 'string' ? msg.pageTitle.slice(0, 300) : undefined;
+
+  if (msg.mode === 'page') {
+    // Cookies still go along: an age-gated or subscriber-only page is
+    // unresolvable without them, whoever ends up doing the resolving.
+    const headers = await collectHeaders(url, null);
+    const result = await postDownload({
+      url,
+      headers,
+      startMode: 'addonly',
+      source: 'extension-video-page',
+      pageTitle
+    });
+    // Raise the window: an item added but not started is only useful if the
+    // user is looking at the place it was added to.
+    try {
+      await apiRequest('/api/v1/show', { method: 'POST' });
+    } catch (_) {
+      /* the add succeeded; failing to focus is not worth an error */
+    }
+    await clearError();
+    return Object.assign({ mode: 'page' }, result);
+  }
+
+  const referrer = isHttpUrl(msg.pageUrl) ? msg.pageUrl : null;
+  const headers = await collectHeaders(url, referrer);
+  const payload = {
+    url,
+    headers,
+    startMode: 'start',
+    source: 'extension-video-overlay',
+    pageTitle
+  };
+  const filename = baseNameOf(String(msg.filename || ''));
+  if (filename) payload.filename = filename;
+  const size = Number(msg.sizeHint);
+  if (size > 0) payload.sizeHint = size;
+
+  const result = await postDownload(payload);
+  await clearError();
+  await flashBadge('1');
+  return Object.assign({ mode: 'file' }, result);
+}
+
+/* ------------------------------------------------------------------ *
+ * Messages from popup / options / content scripts
  * ------------------------------------------------------------------ */
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -1534,6 +1819,39 @@ async function handleMessage(msg) {
       const saved = await setPrefs({ [list]: next });
       return { prefs: saved, host };
     }
+
+    /* ---- video overlay ---- */
+
+    case 'videoOverlayConfig':
+      return videoOverlayConfig(msg.host);
+
+    case 'videoOverlaySetEnabled': {
+      const prefs = await setPrefs({ videoOverlayEnabled: Boolean(msg.on) });
+      return { enabled: prefs.videoOverlayEnabled };
+    }
+
+    case 'videoOverlayBlockSite': {
+      const host = normaliseHostList([msg.host])[0];
+      if (!host) throw new Error('That page has no host to add a rule for.');
+      const prefs = await getPrefs();
+      const current = normaliseHostList(prefs.videoOverlayHosts);
+      if (current.includes(host)) return { host, hosts: current };
+      const next = current.concat([host]);
+      await setPrefs({ videoOverlayHosts: next });
+      return { host, hosts: next };
+    }
+
+    case 'videoOverlaySize':
+      return probeFileSize(String(msg.url || ''));
+
+    case 'videoOverlayProbe':
+      return videoOverlayProbe(String(msg.url || ''));
+
+    case 'videoOverlayResolve':
+      return videoOverlayResolve(String(msg.url || ''), msg.formatId, msg.pageTitle);
+
+    case 'videoOverlaySend':
+      return videoOverlaySend(msg);
 
     /* ---- link grabber ---- */
 
