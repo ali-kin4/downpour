@@ -13,12 +13,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
+  Clock3,
   CalendarClock,
   Plus,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
 import { Badge, Button, Switch, TextInput } from "./ui";
+import { ClockPicker, type ClockEnd } from "./ClockPicker";
 import { formatMinuteOfDay, formatUntil, parseMinuteOfDay } from "../lib/format";
 import {
   DAY_ALL,
@@ -201,6 +203,9 @@ export function ScheduleEditor({
   // "Open now" is wall-clock derived, so it has to be re-evaluated on a timer
   // rather than only when the schedule is edited.
   const [now, setNow] = useState<Moment>(nowMoment);
+  /** Which window's clock face is open, and which of its two hands is being set. */
+  const [clockFor, setClockFor] = useState<string | null>(null);
+  const [clockEnd, setClockEnd] = useState<ClockEnd>("start");
   useEffect(() => {
     const id = window.setInterval(() => setNow(nowMoment()), 15_000);
     return () => window.clearInterval(id);
@@ -345,6 +350,20 @@ export function ScheduleEditor({
                   />
                 </div>
 
+                {clockFor === w.id && (
+                  <div className="dp-slide-down mt-2.5 flex justify-center rounded-[var(--radius-card)] border border-[var(--border-subtle)] bg-[var(--surface-raised)] py-3">
+                    <ClockPicker
+                      start={w.start}
+                      end={w.end}
+                      active={clockEnd}
+                      onActiveChange={setClockEnd}
+                      onChange={(which, minute) =>
+                        updateWindow(w.id, which === "start" ? { start: minute } : { end: minute })
+                      }
+                    />
+                  </div>
+                )}
+
                 <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                   <TimeField
                     value={w.start}
@@ -358,6 +377,15 @@ export function ScheduleEditor({
                     onCommit={(end) => updateWindow(w.id, { end })}
                   />
                   {wraps && <Badge tone="accent">+1 day</Badge>}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-expanded={clockFor === w.id}
+                    aria-label="Pick the times on a clock"
+                    title="Pick the times on a clock"
+                    icon={<Clock3 size={14} />}
+                    onClick={() => setClockFor(clockFor === w.id ? null : w.id)}
+                  />
                   {w.start === w.end && <Badge>24 h</Badge>}
 
                   <div className="ml-auto flex flex-wrap gap-1">

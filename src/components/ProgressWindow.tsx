@@ -1,5 +1,5 @@
 /**
- * The compact, always-on-top progress panel.
+ * The compact progress panel.
  *
  * Rendered into a second Tauri window at `?view=progress`. It shares this
  * app's store and event stream rather than being a second frontend, so it is
@@ -8,6 +8,12 @@
  * Designed to be glanced at, not worked in: one download at a time, big
  * numbers, and only the controls you would reach for without switching
  * windows. Everything else is a click away in the main window.
+ *
+ * Two things it deliberately does not do. It is **not pinned above other
+ * windows by default** — a panel that forces itself to the front is the kind of
+ * thing people close once and never reopen, so the pin is opt-in. And closing
+ * it **never touches the downloads**: they live in the engine, which knows
+ * nothing about windows, and the app itself carries on in the tray.
  */
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -17,6 +23,8 @@ import {
   ChevronRight,
   ExternalLink,
   Pause,
+  Pin,
+  PinOff,
   Play,
   X,
 } from "lucide-react";
@@ -38,6 +46,25 @@ export function ProgressWindow() {
   const settings = useApp((s) => s.settings);
   const run = useApp((s) => s.run);
   const [index, setIndex] = useState(0);
+
+  // Pinning is per-machine window behaviour, not a download preference, so it
+  // lives in localStorage rather than round-tripping through the engine.
+  const [pinned, setPinned] = useState(() => {
+    try {
+      return localStorage.getItem("downpour.progress.pinned") === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    void getCurrentWindow().setAlwaysOnTop(pinned);
+    try {
+      localStorage.setItem("downpour.progress.pinned", pinned ? "1" : "0");
+    } catch {
+      // Not worth surfacing.
+    }
+  }, [pinned]);
 
   useEffect(() => {
     void bootstrap();
@@ -119,9 +146,22 @@ export function ProgressWindow() {
           </div>
           <button
             type="button"
-            aria-label="Close"
+            aria-label={pinned ? "Unpin from the top" : "Keep on top of other windows"}
+            title={pinned ? "Unpin" : "Keep on top"}
+            onClick={() => setPinned((v) => !v)}
+            className="grid size-6 shrink-0 place-items-center rounded-[6px] transition-colors hover:bg-[var(--surface-hover)]"
+            style={{ color: pinned ? "var(--accent)" : "var(--text-tertiary)" }}
+          >
+            {pinned ? <Pin size={13} /> : <PinOff size={13} />}
+          </button>
+          <button
+            type="button"
+            aria-label="Close this panel"
+            // Worth spelling out: people assume closing a progress window
+            // cancels the thing it was showing.
+            title="Close this panel — your downloads keep going"
             onClick={() => void getCurrentWindow().close()}
-            className="grid size-6 shrink-0 place-items-center rounded-[6px] text-[var(--text-tertiary)] hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
+            className="grid size-6 shrink-0 place-items-center rounded-[6px] text-[var(--text-tertiary)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
           >
             <X size={14} />
           </button>
@@ -218,7 +258,10 @@ export function ProgressWindow() {
         </div>
 
         {settings && (
-          <label className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-tertiary)]">
+          <label
+            className="flex items-center gap-1.5 text-[10.5px] text-[var(--text-tertiary)]"
+            title="Downloads continue either way; this only hides the panel."
+          >
             <input
               type="checkbox"
               className="size-3 accent-[var(--accent)]"

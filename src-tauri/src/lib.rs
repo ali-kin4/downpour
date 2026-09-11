@@ -231,6 +231,12 @@ fn apply_autostart(_app: &tauri::AppHandle) {}
 
 fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
     if let WindowEvent::CloseRequested { api, .. } = event {
+        // Only the main window hides instead of closing. Closing the compact
+        // progress panel must genuinely close it -- and must never touch the
+        // downloads, which live in the engine and know nothing about windows.
+        if window.label() != "main" {
+            return;
+        }
         let Some(state) = window.try_state::<AppState>() else {
             return;
         };
