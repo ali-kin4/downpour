@@ -6,6 +6,7 @@
 //! tests before a window existed.
 
 mod commands;
+mod media;
 mod power;
 mod progress_window;
 mod rpc;
@@ -82,6 +83,10 @@ pub fn run() {
             commands::close_progress_window,
             commands::progress_window_open,
             commands::app_version,
+            media::yt_dlp_status,
+            media::install_yt_dlp,
+            media::probe_media,
+            media::resolve_media,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Downpour");

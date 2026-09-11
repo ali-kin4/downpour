@@ -172,3 +172,93 @@ export function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
   return "Something went wrong";
 }
+
+// -- Media pages (yt-dlp) ---------------------------------------------------
+
+/**
+ * yt-dlp install progress arrives on its own channel: installing a tool is not
+ * a download and has no place in the engine's event union.
+ */
+const MEDIA_EVENT_CHANNEL = "downpour://media";
+
+export interface YtDlpStatus {
+  installed: boolean;
+  /** Where it is, or where it *would* go — shown before asking to install. */
+  path: string;
+  version: string | null;
+  /** Present when the file is there but will not run. */
+  error: string | null;
+}
+
+export interface MediaFormat {
+  formatId: string;
+  ext: string;
+  resolution: string | null;
+  height: number | null;
+  fps: number | null;
+  filesize: number | null;
+  /** The size was derived, not reported; show it as "about". */
+  filesizeIsEstimate: boolean;
+  vcodec: string | null;
+  acodec: string | null;
+  /** Audio and video in one stream — the only kind we can fetch unaided. */
+  progressive: boolean;
+  /** Plain HTTP(S), not an HLS/DASH playlist. */
+  directHttp: boolean;
+  protocol: string | null;
+  label: string;
+  note: string | null;
+}
+
+export interface MediaInfo {
+  title: string;
+  durationSecs: number | null;
+  thumbnail: string | null;
+  uploader: string | null;
+  webpageUrl: string | null;
+  extractor: string | null;
+  isLive: boolean;
+  formats: MediaFormat[];
+}
+
+export interface ResolvedMedia {
+  url: string;
+  /** Required to fetch the URL at all; without them most CDNs answer 403. */
+  headers: Record<string, string>;
+  filename: string;
+  filesize: number | null;
+  formatId: string;
+  ext: string;
+  progressive: boolean;
+  directHttp: boolean;
+}
+
+export interface YtDlpInstallProgress {
+  phase: "resolving" | "checksum" | "downloading" | "verifying" | "done";
+  downloaded: number;
+  total: number | null;
+  message: string;
+}
+
+/** Whether yt-dlp is present in the app data folder, and which version. */
+export const ytDlpStatus = () => call<YtDlpStatus>("yt_dlp_status");
+/**
+ * Downloads yt-dlp from its official GitHub release and verifies the SHA-256.
+ *
+ * Only ever call this from an explicit user action that has already said what
+ * is being downloaded and where it comes from.
+ */
+export const installYtDlp = () => call<YtDlpStatus>("install_yt_dlp");
+/** Reads a media page's title and available formats without downloading. */
+export const probeMedia = (url: string) => call<MediaInfo>("probe_media", { url });
+/** Turns a chosen format into a direct URL plus the headers it requires. */
+export const resolveMedia = (url: string, formatId: string) =>
+  call<ResolvedMedia>("resolve_media", { url, formatId });
+
+/** Subscribes to yt-dlp install progress. Callers must unlisten on unmount. */
+export async function onYtDlpInstallProgress(
+  handler: (progress: YtDlpInstallProgress) => void,
+): Promise<UnlistenFn> {
+  if (!inTauri()) return () => {};
+  return listen<YtDlpInstallProgress>(MEDIA_EVENT_CHANNEL, (e) => handler(e.payload));
+}
