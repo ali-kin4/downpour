@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Downpour</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="popup">
+    <header class="dp-header">
+      <img src="icons/32x32.png" alt="" />
+      <h1>Downpour</h1>
+      <span class="dp-sub" id="version"></span>
+    </header>
+
+    <div class="dp-body">
+      <div class="card">
+        <div class="status">
+          <span class="dot" id="dot"></span>
+          <div>
+            <div class="status-text" id="statusText">Checking…</div>
+            <p class="hint" id="statusHint"></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row between">
+          <div>
+            <div class="status-text">Capture downloads</div>
+            <p class="hint">Hand matching browser downloads to Downpour.</p>
+          </div>
+          <label class="switch" title="Toggle download capture">
+            <input type="checkbox" id="captureToggle" />
+            <span class="track"></span>
+          </label>
+        </div>
+      </div>
+
+      <div id="errorBox" class="msg err dismissable" title="Click to dismiss" hidden></div>
+
+      <div class="stack">
+        <button class="primary wide" id="openApp">Open Downpour</button>
+        <div class="row between">
+          <button class="footer-link" id="openOptions">Settings</button>
+          <button class="footer-link" id="recheck">Re-check connection</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

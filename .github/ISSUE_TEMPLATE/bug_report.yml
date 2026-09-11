@@ -1,0 +1,100 @@
+name: Bug report
+description: Something in Downpour does not work the way it should.
+title: "[Bug]: "
+labels: ["bug", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this.
+
+        **Please do not report security vulnerabilities here.** See
+        [SECURITY.md](https://github.com/ali-kin4/downpour/blob/main/SECURITY.md) for the private reporting route.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+      placeholder: |
+        I added a 4 GB ISO from example.com. It reached 98% and then restarted
+        from zero instead of resuming.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smaller the number of steps, the faster this gets fixed.
+      placeholder: |
+        1. Open Downpour
+        2. Paste this URL: ...
+        3. Pause after ~10 seconds
+        4. Resume
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Downpour version
+      description: Shown in the installer filename, or in Settings.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install it?
+      options:
+        - NSIS installer (-setup.exe)
+        - MSI installer
+        - Built from source
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Downpour?
+      description: Best guess is fine.
+      options:
+        - Download engine (speed, resume, segmentation)
+        - Scheduling
+        - Bandwidth limiting
+        - Browser extension / local RPC
+        - Desktop UI
+        - Installer
+        - Not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: url
+    attributes:
+      label: URL or host, if it is reproducible with a specific one
+      description: >
+        Redact anything private. A host name alone ("files.example.com") is
+        often enough, since most download bugs are really server-behaviour bugs.
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error text
+      description: Pasted here it will be formatted automatically; no backticks needed.
+      render: shell
+    validations:
+      required: false

@@ -210,7 +210,11 @@ mod tests {
         assert_eq!(s.eta_secs(1_000_000, None), None, "unknown size");
         let eta = s.eta_secs(1_000_000, Some(11_000_000)).unwrap();
         assert!((9..=11).contains(&eta), "eta was {eta}");
-        assert_eq!(s.eta_secs(11_000_000, Some(11_000_000)), None, "already done");
+        assert_eq!(
+            s.eta_secs(11_000_000, Some(11_000_000)),
+            None,
+            "already done"
+        );
     }
 
     #[test]
@@ -226,7 +230,7 @@ mod tests {
         s.last_at = t0;
         s.sample_at(2_000_000, t0 + Duration::from_secs(1));
         s.sample_at(2_000_000, t0 + Duration::from_secs(3)); // stalled 2s
-        // 2 MB over 3 seconds.
+                                                             // 2 MB over 3 seconds.
         let avg = s.average_bps();
         assert!(avg > 600_000 && avg < 700_000, "avg was {avg}");
     }

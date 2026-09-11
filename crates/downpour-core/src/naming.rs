@@ -122,12 +122,11 @@ fn find_param(value: &str, name: &str) -> Option<usize> {
     let mut from = 0usize;
     while let Some(rel) = lower[from..].find(name) {
         let at = from + rel;
-        let before_ok = at == 0
-            || matches!(lower.as_bytes()[at - 1], b';' | b' ' | b'\t');
+        let before_ok = at == 0 || matches!(lower.as_bytes()[at - 1], b';' | b' ' | b'\t');
         let after = at + name.len();
         // `filename` must not match the `filename` prefix of `filename*`.
-        let after_ok = lower[after..].starts_with('=')
-            || lower[after..].trim_start().starts_with('=');
+        let after_ok =
+            lower[after..].starts_with('=') || lower[after..].trim_start().starts_with('=');
         if before_ok && after_ok {
             let eq = lower[after..].find('=')? + after;
             return Some(eq + 1);
@@ -139,7 +138,7 @@ fn find_param(value: &str, name: &str) -> Option<usize> {
 
 /// Derives a filename from a URL path, ignoring the query string.
 pub fn from_url(url: &url::Url) -> Option<String> {
-    let last = url.path_segments()?.filter(|s| !s.is_empty()).next_back()?;
+    let last = url.path_segments()?.rfind(|s| !s.is_empty())?;
     let decoded = percent_decode_str(last).decode_utf8_lossy().to_string();
     sanitize(&decoded)
 }
@@ -224,7 +223,10 @@ mod tests {
     #[test]
     fn sanitize_strips_directory_traversal() {
         assert_eq!(sanitize("../../etc/passwd").unwrap(), "passwd");
-        assert_eq!(sanitize("..\\..\\windows\\system32\\cmd.exe").unwrap(), "cmd.exe");
+        assert_eq!(
+            sanitize("..\\..\\windows\\system32\\cmd.exe").unwrap(),
+            "cmd.exe"
+        );
         assert_eq!(sanitize(".."), None);
     }
 
@@ -239,7 +241,11 @@ mod tests {
         assert_eq!(sanitize("CON").unwrap(), "CON_");
         assert_eq!(sanitize("con.txt").unwrap(), "con_.txt");
         assert_eq!(sanitize("COM1.log").unwrap(), "COM1_.log");
-        assert_eq!(sanitize("console.log").unwrap(), "console.log", "only exact matches");
+        assert_eq!(
+            sanitize("console.log").unwrap(),
+            "console.log",
+            "only exact matches"
+        );
     }
 
     #[test]
@@ -320,7 +326,12 @@ mod tests {
     fn derive_follows_precedence() {
         let u = url::Url::parse("https://example.com/from-url.bin").unwrap();
         assert_eq!(
-            derive(Some("explicit.txt"), Some("attachment; filename=cd.txt"), &u, None),
+            derive(
+                Some("explicit.txt"),
+                Some("attachment; filename=cd.txt"),
+                &u,
+                None
+            ),
             "explicit.txt"
         );
         assert_eq!(
@@ -333,8 +344,14 @@ mod tests {
     #[test]
     fn derive_falls_back_to_mime_extension() {
         let u = url::Url::parse("https://example.com/").unwrap();
-        assert_eq!(derive(None, None, &u, Some("application/pdf")), "download.pdf");
-        assert_eq!(derive(None, None, &u, Some("video/mp4; charset=x")), "download.mp4");
+        assert_eq!(
+            derive(None, None, &u, Some("application/pdf")),
+            "download.pdf"
+        );
+        assert_eq!(
+            derive(None, None, &u, Some("video/mp4; charset=x")),
+            "download.mp4"
+        );
         assert_eq!(derive(None, None, &u, None), "download.bin");
     }
 

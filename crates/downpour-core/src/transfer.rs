@@ -153,7 +153,10 @@ impl SegmentTable {
         Self {
             slots: segments
                 .into_iter()
-                .map(|seg| Slot { seg, claimed: false })
+                .map(|seg| Slot {
+                    seg,
+                    claimed: false,
+                })
                 .collect(),
             min_steal_bytes,
         }
@@ -264,7 +267,10 @@ pub async fn run_transfer(
     if let Some(parent) = part_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|source| Error::Io { path: parent.to_path_buf(), source })?;
+            .map_err(|source| Error::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
     }
 
     let total = remote.size;
@@ -285,7 +291,10 @@ pub async fn run_transfer(
     // short file into place looking finished.
     let actual = tokio::fs::metadata(part_path)
         .await
-        .map_err(|source| Error::Io { path: part_path.to_path_buf(), source })?
+        .map_err(|source| Error::Io {
+            path: part_path.to_path_buf(),
+            source,
+        })?
         .len();
     if let Some(expected) = total {
         if actual != expected {
@@ -316,7 +325,10 @@ pub async fn run_transfer(
 
     tokio::fs::rename(part_path, final_path)
         .await
-        .map_err(|source| Error::Io { path: final_path.to_path_buf(), source })?;
+        .map_err(|source| Error::Io {
+            path: final_path.to_path_buf(),
+            source,
+        })?;
     // The sidecar has done its job; leaving it behind would litter the
     // download folder with files the user did not ask for.
     let _ = tokio::fs::remove_file(meta_path).await;
@@ -362,17 +374,24 @@ async fn segmented_transfer(
         // and it surfaces a full disk now rather than at 98%.
         let file = tokio::fs::File::create(part_path)
             .await
-            .map_err(|source| Error::Io { path: part_path.to_path_buf(), source })?;
-        file.set_len(total)
-            .await
-            .map_err(|source| Error::Io { path: part_path.to_path_buf(), source })?;
+            .map_err(|source| Error::Io {
+                path: part_path.to_path_buf(),
+                source,
+            })?;
+        file.set_len(total).await.map_err(|source| Error::Io {
+            path: part_path.to_path_buf(),
+            source,
+        })?;
         drop(file);
     }
 
     let already = segments.iter().map(|s| s.downloaded()).sum::<u64>();
     ctx.progress.downloaded.store(already, Ordering::Relaxed);
 
-    let table = Arc::new(Mutex::new(SegmentTable::new(segments, config.min_steal_bytes)));
+    let table = Arc::new(Mutex::new(SegmentTable::new(
+        segments,
+        config.min_steal_bytes,
+    )));
 
     // One worker per planned segment, capped by the configured connection
     // count. Extra workers would simply steal on their first iteration, which
@@ -399,7 +418,13 @@ async fn segmented_transfer(
         let config = config.clone();
 
         workers.push(tokio::spawn(async move {
-            let ctx = TransferContext { client, headers, control, limiter, progress };
+            let ctx = TransferContext {
+                client,
+                headers,
+                control,
+                limiter,
+                progress,
+            };
             worker_loop(worker_id, &ctx, &url, &part_path, &table, &config).await
         }));
     }
@@ -548,7 +573,10 @@ async fn worker_loop(
         .write(true)
         .open(part_path)
         .await
-        .map_err(|source| Error::Io { path: part_path.to_path_buf(), source })?;
+        .map_err(|source| Error::Io {
+            path: part_path.to_path_buf(),
+            source,
+        })?;
 
     loop {
         ctx.control.check()?;
@@ -561,9 +589,13 @@ async fn worker_loop(
             }
         };
 
-        ctx.progress.active_connections.fetch_add(1, Ordering::Relaxed);
+        ctx.progress
+            .active_connections
+            .fetch_add(1, Ordering::Relaxed);
         let result = fetch_segment(ctx, url, idx, table, &mut file, config).await;
-        ctx.progress.active_connections.fetch_sub(1, Ordering::Relaxed);
+        ctx.progress
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed);
 
         table.lock().release(idx);
         result?;
@@ -630,7 +662,10 @@ fn backoff_delay(attempt: u32) -> Duration {
         .unwrap_or(0);
     let jitter = base / 2;
     let offset = nanos % jitter.max(1);
-    Duration::from_millis(base.saturating_sub(jitter / 2).saturating_add(offset % jitter.max(1)))
+    Duration::from_millis(
+        base.saturating_sub(jitter / 2)
+            .saturating_add(offset % jitter.max(1)),
+    )
 }
 
 async fn stream_range(
@@ -657,7 +692,9 @@ async fn stream_range(
         // body into a mid-file segment slot is exactly the corruption this
         // engine exists to avoid, so refuse rather than guess.
         if status.is_success() {
-            return Err(Error::RangeNotHonoured { status: status.as_u16() });
+            return Err(Error::RangeNotHonoured {
+                status: status.as_u16(),
+            });
         }
         return Err(Error::BadStatus {
             status: status.as_u16(),
@@ -667,7 +704,11 @@ async fn stream_range(
 
     // Verify the server gave us the window we asked for. Some CDNs round or
     // clamp ranges; honouring that silently scatters bytes at wrong offsets.
-    if let Some(cr) = response.headers().get(CONTENT_RANGE).and_then(|v| v.to_str().ok()) {
+    if let Some(cr) = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+    {
         match probe::parse_content_range_span(cr) {
             Some((got_start, _)) if got_start == start => {}
             Some((got_start, got_end)) => {
@@ -706,7 +747,9 @@ async fn stream_range(
 
         ctx.limiter.acquire(take as u64).await;
 
-        file.write_all(&chunk[..take]).await.map_err(Error::PlainIo)?;
+        file.write_all(&chunk[..take])
+            .await
+            .map_err(Error::PlainIo)?;
         cursor += take as u64;
 
         table.lock().advance(idx, take as u64);
@@ -770,7 +813,10 @@ async fn plain_transfer(
 
     let mut file = tokio::fs::File::create(part_path)
         .await
-        .map_err(|source| Error::Io { path: part_path.to_path_buf(), source })?;
+        .map_err(|source| Error::Io {
+            path: part_path.to_path_buf(),
+            source,
+        })?;
 
     let mut written = 0u64;
     let mut stream = response.bytes_stream();
@@ -781,9 +827,7 @@ async fn plain_transfer(
             ctx.limiter.acquire(chunk.len() as u64).await;
             file.write_all(&chunk).await.map_err(Error::PlainIo)?;
             written += chunk.len() as u64;
-            ctx.progress
-                .downloaded
-                .store(written, Ordering::Relaxed);
+            ctx.progress.downloaded.store(written, Ordering::Relaxed);
         }
         Ok::<(), Error>(())
     }
@@ -806,7 +850,10 @@ pub async fn sha256_file(path: &Path) -> Result<String> {
     use tokio::io::AsyncReadExt;
     let mut file = tokio::fs::File::open(path)
         .await
-        .map_err(|source| Error::Io { path: path.to_path_buf(), source })?;
+        .map_err(|source| Error::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1024 * 256];
     loop {
@@ -824,10 +871,12 @@ pub async fn sha256_file(path: &Path) -> Result<String> {
 
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 /// Builds the HTTP client the engine uses.
@@ -891,9 +940,16 @@ mod tests {
         let (s_start, s_end) = t.bounds(stolen);
         let after_b = t.bounds(b);
 
-        assert_eq!(after_b.1, s_start - 1, "donor end moved to just before the tail");
+        assert_eq!(
+            after_b.1,
+            s_start - 1,
+            "donor end moved to just before the tail"
+        );
         assert_eq!(s_end, before_b.1, "tail keeps the original end");
-        assert!(s_start > before_b.0, "tail starts ahead of the donor cursor");
+        assert!(
+            s_start > before_b.0,
+            "tail starts ahead of the donor cursor"
+        );
     }
 
     #[test]

@@ -1,0 +1,531 @@
+//! The loopback RPC server the browser extension talks to.
+//!
+//! Implements `docs/rpc-protocol.md` v1. Three things here are load-bearing and
+//! easy to get wrong:
+//!
+//! 1. **Bind `127.0.0.1`, never `0.0.0.0`.** Binding all interfaces would let
+//!    anything on the local network queue downloads on this machine.
+//! 2. **Answer CORS preflight explicitly.** A browser extension's `fetch` sends
+//!    `OPTIONS` first; without a correct response every POST fails inside the
+//!    browser with no error the extension can observe or report.
+//! 3. **Compare the token in constant time.** Loopback is not a safe channel
+//!    when every tab in the browser can make requests to it.
+
+// The handlers below return `Result<_, Response>`. Clippy flags the error
+// variant as large, but an axum `Response` is what the framework requires and
+// boxing it would only add an allocation on a path that is already returning a
+// full HTTP response.
+#![allow(clippy::result_large_err)]
+
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use downpour_core::model::{DownloadSpec, StartMode};
+use downpour_core::Engine;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Bodies larger than this are refused. Cookie headers get long and batches get
+/// big, but nothing legitimate approaches a quarter of a megabyte.
+const MAX_BODY_BYTES: usize = 256 * 1024;
+
+/// How many ports past the configured one to try before giving up.
+const PORT_SCAN_RANGE: u16 = 10;
+
+#[derive(Clone)]
+struct RpcState {
+    engine: Engine,
+    /// Needed only so `/show` can raise the window; the rest of the surface is
+    /// pure engine and stays testable without a running app.
+    app: tauri::AppHandle,
+}
+
+/// Starts the listener, returning the port it actually bound.
+///
+/// Returns `None` when the feature is disabled or no port in the range is free;
+/// the app runs perfectly well without it, so this is never fatal.
+pub async fn serve(engine: Engine, app: tauri::AppHandle) -> Option<u16> {
+    let settings = engine.settings();
+    if !settings.rpc_enabled {
+        tracing::info!("browser integration disabled; not starting the local listener");
+        return None;
+    }
+
+    let state = RpcState { engine, app };
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/api/v1/capture", get(capture_settings))
+        .route("/api/v1/downloads", post(add_one))
+        .route("/api/v1/downloads/batch", post(add_batch))
+        .route("/api/v1/downloads/text", post(add_text))
+        .route("/api/v1/show", post(show_window))
+        // A catch-all so preflight to an unknown path still gets CORS headers
+        // rather than a bare 404 the extension cannot diagnose.
+        .fallback(not_found)
+        .layer(middleware::from_fn_with_state(state.clone(), gate))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .with_state(state);
+
+    let base = settings.rpc_port;
+    for offset in 0..PORT_SCAN_RANGE {
+        let port = base.saturating_add(offset);
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                tracing::info!(%addr, "local RPC listening");
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = axum::serve(listener, app).await {
+                        tracing::error!(error = %e, "local RPC server stopped");
+                    }
+                });
+                return Some(port);
+            }
+            Err(e) => {
+                tracing::debug!(port, error = %e, "port unavailable, trying the next");
+            }
+        }
+    }
+    tracing::warn!(
+        base,
+        "no free port in range; browser integration is unavailable this session"
+    );
+    None
+}
+
+// ---------------------------------------------------------------------------
+// CORS and authentication
+// ---------------------------------------------------------------------------
+
+/// Single middleware for preflight, CORS headers and token checking.
+///
+/// Combining them is deliberate: a `401` that lacks CORS headers is invisible
+/// to the extension, which sees only an opaque network failure and reports
+/// "Downpour not running" when the real problem is a stale token.
+async fn gate(State(state): State<RpcState>, req: Request<Body>, next: Next) -> Response {
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+
+    if req.method() == Method::OPTIONS {
+        return cors(StatusCode::NO_CONTENT.into_response(), origin.as_deref());
+    }
+
+    // Presence is not a secret, and requiring a token to detect the app would
+    // make the extension's pairing flow impossible to explain.
+    if req.uri().path() != "/health" {
+        let token = state.engine.settings().rpc_token;
+        let presented = req
+            .headers()
+            .get("x-downpour-token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !constant_time_eq(presented.as_bytes(), token.as_bytes()) {
+            let body = Json(ErrorBody {
+                error: "unauthorized".into(),
+                detail: None,
+            });
+            return cors(
+                (StatusCode::UNAUTHORIZED, body).into_response(),
+                origin.as_deref(),
+            );
+        }
+    }
+
+    cors(next.run(req).await, origin.as_deref())
+}
+
+/// Reflects extension origins only. A page on the open web gets no CORS headers
+/// at all, so even with a leaked token it cannot read a response.
+fn cors(mut response: Response, origin: Option<&str>) -> Response {
+    let allowed = matches!(origin, Some(o)
+        if o.starts_with("chrome-extension://") || o.starts_with("moz-extension://"));
+
+    let headers = response.headers_mut();
+    if allowed {
+        if let Ok(v) = HeaderValue::from_str(origin.unwrap()) {
+            headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
+        }
+    }
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Content-Type, X-Downpour-Token"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("86400"),
+    );
+    // Without Vary, a cache could serve one extension's CORS headers to another.
+    headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+    response
+}
+
+/// Length-independent comparison. Returns false for differing lengths without
+/// leaking where the difference is.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() || a.is_empty() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+// ---------------------------------------------------------------------------
+// Payloads
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ErrorBody {
+    error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Health {
+    app: &'static str,
+    version: &'static str,
+    protocol: u32,
+    ok: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureSettings {
+    enabled: bool,
+    min_size_bytes: u64,
+    include_extensions: Vec<String>,
+    exclude_hosts: Vec<String>,
+    exclude_extensions: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddItem {
+    url: String,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    #[serde(default)]
+    filename: Option<String>,
+    #[serde(default)]
+    dest_dir: Option<PathBuf>,
+    #[serde(default)]
+    start_mode: StartMode,
+    #[serde(default)]
+    source: Option<String>,
+    // Accepted and ignored: display-only hints from the browser. Declaring
+    // them keeps a well-formed request from being rejected as malformed.
+    #[serde(default, rename = "sizeHint")]
+    _size_hint: Option<u64>,
+    #[serde(default, rename = "pageTitle")]
+    _page_title: Option<String>,
+}
+
+impl From<AddItem> for DownloadSpec {
+    fn from(i: AddItem) -> Self {
+        DownloadSpec {
+            url: i.url,
+            headers: i.headers,
+            filename: i.filename,
+            dest_dir: i.dest_dir.unwrap_or_default(),
+            connections: None,
+            category: None,
+            start_mode: i.start_mode,
+            checksum: None,
+            source: i.source.or_else(|| Some("extension".into())),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct BatchBody {
+    items: Vec<AddItem>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TextBody {
+    text: String,
+    #[serde(default)]
+    start_mode: StartMode,
+    #[serde(default)]
+    dest_dir: Option<PathBuf>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AddedOne {
+    id: String,
+    filename: String,
+    status: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AddedMany {
+    ids: Vec<String>,
+    accepted: usize,
+    rejected: usize,
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+async fn health() -> Json<Health> {
+    Json(Health {
+        app: "downpour",
+        version: env!("CARGO_PKG_VERSION"),
+        protocol: 1,
+        ok: true,
+    })
+}
+
+async fn capture_settings(State(state): State<RpcState>) -> Json<CaptureSettings> {
+    let s = state.engine.settings();
+    Json(CaptureSettings {
+        enabled: s.rpc_enabled,
+        min_size_bytes: 0,
+        include_extensions: s.clipboard_extensions.clone(),
+        exclude_hosts: Vec::new(),
+        // Intercepting these would break ordinary browsing: every page, script
+        // and stylesheet would be handed to the download manager.
+        exclude_extensions: [
+            "html", "htm", "xhtml", "css", "js", "mjs", "json", "xml", "svg", "ico", "woff",
+            "woff2", "ttf", "map",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
+    })
+}
+
+async fn add_one(
+    State(state): State<RpcState>,
+    Json(item): Json<AddItem>,
+) -> Result<(StatusCode, Json<AddedOne>), Response> {
+    if !is_http_url(&item.url) {
+        return Err(bad_request("invalid_url"));
+    }
+    let id = state
+        .engine
+        .add(item.into())
+        .map_err(|e| internal(&e.to_string()))?;
+    let item = state.engine.get(&id);
+    Ok((
+        StatusCode::CREATED,
+        Json(AddedOne {
+            filename: item
+                .as_ref()
+                .map(|i| i.filename.clone())
+                .unwrap_or_default(),
+            status: item
+                .as_ref()
+                .map(|i| format!("{:?}", i.status).to_lowercase())
+                .unwrap_or_else(|| "queued".into()),
+            id,
+        }),
+    ))
+}
+
+async fn add_batch(
+    State(state): State<RpcState>,
+    Json(body): Json<BatchBody>,
+) -> Result<(StatusCode, Json<AddedMany>), Response> {
+    let submitted = body.items.len();
+    // One dead link in a page scrape must not discard the other nineteen.
+    let specs: Vec<DownloadSpec> = body
+        .items
+        .into_iter()
+        .filter(|i| is_http_url(&i.url))
+        .map(Into::into)
+        .collect();
+
+    let ids = state
+        .engine
+        .add_many(specs)
+        .map_err(|e| internal(&e.to_string()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(AddedMany {
+            accepted: ids.len(),
+            rejected: submitted.saturating_sub(ids.len()),
+            ids,
+        }),
+    ))
+}
+
+async fn add_text(
+    State(state): State<RpcState>,
+    Json(body): Json<TextBody>,
+) -> Result<(StatusCode, Json<AddedMany>), Response> {
+    let ids = state
+        .engine
+        .add_from_text(
+            &body.text,
+            body.start_mode,
+            body.dest_dir,
+            Some("extension".into()),
+        )
+        .map_err(|e| internal(&e.to_string()))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(AddedMany {
+            accepted: ids.len(),
+            rejected: 0,
+            ids,
+        }),
+    ))
+}
+
+/// Brings the Downpour window to the foreground.
+///
+/// The extension needs this for its "Open Downpour" button; the alternative
+/// was registering a custom URL scheme, which is far more machinery for one
+/// action and leaves a protocol handler installed system-wide.
+async fn show_window(State(state): State<RpcState>) -> StatusCode {
+    use tauri::Manager;
+    if let Some(w) = state.app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+    StatusCode::NO_CONTENT
+}
+
+async fn not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorBody {
+            error: "not_found".into(),
+            detail: None,
+        }),
+    )
+        .into_response()
+}
+
+fn is_http_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .map(|u| matches!(u.scheme(), "http" | "https"))
+        .unwrap_or(false)
+}
+
+fn bad_request(code: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorBody {
+            error: code.into(),
+            detail: None,
+        }),
+    )
+        .into_response()
+}
+
+fn internal(detail: &str) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorBody {
+            error: "internal".into(),
+            detail: Some(detail.to_string()),
+        }),
+    )
+        .into_response()
+}
+
+/// Unused today, but kept so the type is exercised if the server later needs to
+/// hand headers back to a caller.
+#[allow(dead_code)]
+fn header_map_to_btree(h: &HeaderMap) -> BTreeMap<String, String> {
+    h.iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+#[allow(dead_code)]
+type Shared = Arc<RpcState>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_time_eq_matches_only_identical_input() {
+        assert!(constant_time_eq(b"abc123", b"abc123"));
+        assert!(!constant_time_eq(b"abc123", b"abc124"));
+        assert!(!constant_time_eq(b"abc", b"abcd"), "differing lengths");
+        assert!(
+            !constant_time_eq(b"", b""),
+            "an empty token never authorises"
+        );
+    }
+
+    #[test]
+    fn only_extension_origins_are_reflected() {
+        let with = |origin: Option<&str>| {
+            let r = cors(StatusCode::OK.into_response(), origin);
+            r.headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        assert_eq!(
+            with(Some("chrome-extension://abcdef")),
+            Some("chrome-extension://abcdef".into())
+        );
+        assert_eq!(
+            with(Some("moz-extension://abcdef")),
+            Some("moz-extension://abcdef".into())
+        );
+        assert_eq!(
+            with(Some("https://evil.example.com")),
+            None,
+            "web origins get nothing"
+        );
+        assert_eq!(with(None), None);
+    }
+
+    #[test]
+    fn cors_headers_are_always_present_even_without_an_origin() {
+        // The extension needs these on the 401 too, or a stale token looks
+        // identical to the app being closed.
+        let r = cors(StatusCode::UNAUTHORIZED.into_response(), None);
+        assert!(r
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .is_some());
+        assert!(r
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .is_some());
+        assert_eq!(r.headers().get(header::VARY).unwrap(), "Origin");
+    }
+
+    #[test]
+    fn url_scheme_validation() {
+        assert!(is_http_url("https://example.com/a.zip"));
+        assert!(is_http_url("http://example.com/a.zip"));
+        assert!(!is_http_url("ftp://example.com/a.zip"));
+        assert!(!is_http_url("file:///c:/secret.txt"));
+        assert!(!is_http_url("magnet:?xt=urn:btih:abc"));
+        assert!(!is_http_url("not a url"));
+    }
+}

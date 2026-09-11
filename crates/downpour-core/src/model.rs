@@ -74,6 +74,7 @@ pub enum StartMode {
 /// Everything needed to begin a download. Built by the UI, the CLI, the
 /// clipboard watcher or the browser extension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadSpec {
     pub url: String,
     /// Per-download request headers. This carries `Cookie`, `Referer` and
@@ -114,7 +115,11 @@ pub struct Segment {
 
 impl Segment {
     pub fn new(start: u64, end: u64) -> Self {
-        Self { start, end, cursor: start }
+        Self {
+            start,
+            end,
+            cursor: start,
+        }
     }
     /// Bytes still to fetch. Saturating, so a finished segment reports 0.
     pub fn remaining(&self) -> u64 {
@@ -130,6 +135,7 @@ impl Segment {
 
 /// What the server told us about the resource during the probe.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemoteInfo {
     /// URL after redirects; all subsequent range requests use this.
     pub final_url: String,
@@ -178,6 +184,7 @@ impl RemoteInfo {
 
 /// A download as the UI sees it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadItem {
     pub id: DownloadId,
     pub url: String,
@@ -246,10 +253,20 @@ impl DownloadItem {
 /// Events broadcast by the engine. The Tauri layer forwards these to the UI and
 /// the CLI renders them as log lines.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum EngineEvent {
-    Added { item: Box<DownloadItem> },
-    StatusChanged { id: DownloadId, status: DownloadStatus, error: Option<String> },
+    Added {
+        item: Box<DownloadItem>,
+    },
+    StatusChanged {
+        id: DownloadId,
+        status: DownloadStatus,
+        error: Option<String>,
+    },
     Progress {
         id: DownloadId,
         downloaded_bytes: u64,
@@ -258,10 +275,29 @@ pub enum EngineEvent {
         eta_secs: Option<u64>,
         connections: u8,
     },
-    Completed { id: DownloadId, path: PathBuf },
-    Failed { id: DownloadId, error: String },
-    Removed { id: DownloadId },
+    Completed {
+        id: DownloadId,
+        path: PathBuf,
+    },
+    Failed {
+        id: DownloadId,
+        error: String,
+    },
+    Removed {
+        id: DownloadId,
+    },
     /// Emitted when the scheduler opens or closes a window, so the UI can show
     /// "downloading until 07:00" instead of leaving the user guessing.
-    SchedulerWindow { open: bool, label: Option<String> },
+    SchedulerWindow {
+        open: bool,
+        label: Option<String>,
+    },
+    /// The queue just went from busy to empty. The desktop shell turns this
+    /// into the "sleep / shut down when finished" behaviour; the engine only
+    /// reports the fact, because an engine that could power off the machine
+    /// would be untestable.
+    QueueDrained {
+        completed: usize,
+        failed: usize,
+    },
 }

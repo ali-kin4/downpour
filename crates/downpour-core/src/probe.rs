@@ -86,7 +86,10 @@ pub async fn probe(
                 suggested_filename: header_string(&h, CONTENT_DISPOSITION),
             });
         }
-        return Err(Error::BadStatus { status: status.as_u16(), url: final_url });
+        return Err(Error::BadStatus {
+            status: status.as_u16(),
+            url: final_url,
+        });
     }
 
     // 206 is the only proof of real range support.
@@ -162,8 +165,14 @@ mod tests {
 
     #[test]
     fn content_range_total_parses() {
-        assert_eq!(parse_content_range_total_str("bytes 0-0/12345"), Some(12345));
-        assert_eq!(parse_content_range_total_str("bytes 0-499/1000"), Some(1000));
+        assert_eq!(
+            parse_content_range_total_str("bytes 0-0/12345"),
+            Some(12345)
+        );
+        assert_eq!(
+            parse_content_range_total_str("bytes 0-499/1000"),
+            Some(1000)
+        );
     }
 
     #[test]
@@ -174,7 +183,10 @@ mod tests {
 
     #[test]
     fn content_range_span_parses() {
-        assert_eq!(parse_content_range_span("bytes 200-1000/67589"), Some((200, 1000)));
+        assert_eq!(
+            parse_content_range_span("bytes 200-1000/67589"),
+            Some((200, 1000))
+        );
         assert_eq!(parse_content_range_span("bytes 0-0/1"), Some((0, 0)));
     }
 

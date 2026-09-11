@@ -90,14 +90,17 @@ pub struct LocalMoment {
 
 impl LocalMoment {
     pub fn new(weekday: Weekday, hour: u8, minute: u8) -> Self {
-        Self { weekday, minute: hour as u16 * 60 + minute as u16 }
+        Self {
+            weekday,
+            minute: hour as u16 * 60 + minute as u16,
+        }
     }
 
     /// Reads the machine clock. Falls back to UTC if the local offset cannot be
     /// determined, which only happens in exotic multi-threaded Unix setups.
     pub fn now() -> Self {
-        let now = time::OffsetDateTime::now_local()
-            .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
         Self {
             weekday: now.weekday().into(),
             minute: now.hour() as u16 * 60 + now.minute() as u16,
@@ -107,6 +110,7 @@ impl LocalMoment {
 
 /// A recurring window during which downloads are allowed to run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScheduleWindow {
     pub id: String,
     #[serde(default)]
@@ -209,7 +213,11 @@ impl ScheduleWindow {
         }
         let now = at.minute as u32;
         let end = self.end as u32;
-        Some(if end > now { end - now } else { end + MINUTES_PER_DAY - now })
+        Some(if end > now {
+            end - now
+        } else {
+            end + MINUTES_PER_DAY - now
+        })
     }
 
     /// `"02:00"` style rendering, for labels and logs.
@@ -241,6 +249,7 @@ pub fn parse_time(s: &str) -> Option<MinuteOfDay> {
 /// When `enabled` is false the scheduler never gates anything, which is the
 /// default so a new user is not surprised by downloads refusing to start.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct Schedule {
     #[serde(default)]
     pub enabled: bool,
@@ -315,9 +324,18 @@ mod tests {
         w.days = DaySet(1 << Weekday::Friday as u8);
 
         assert!(w.contains(at(Weekday::Friday, 23, 0)), "opens Friday night");
-        assert!(w.contains(at(Weekday::Saturday, 2, 0)), "still open Saturday morning");
-        assert!(!w.contains(at(Weekday::Saturday, 23, 0)), "does not reopen Saturday");
-        assert!(!w.contains(at(Weekday::Friday, 5, 0)), "Friday morning belongs to Thursday night");
+        assert!(
+            w.contains(at(Weekday::Saturday, 2, 0)),
+            "still open Saturday morning"
+        );
+        assert!(
+            !w.contains(at(Weekday::Saturday, 23, 0)),
+            "does not reopen Saturday"
+        );
+        assert!(
+            !w.contains(at(Weekday::Friday, 5, 0)),
+            "Friday morning belongs to Thursday night"
+        );
     }
 
     #[test]
@@ -354,21 +372,28 @@ mod tests {
     fn minutes_until_open_same_day() {
         let w = ScheduleWindow::new("night", 2 * 60, 7 * 60);
         assert_eq!(w.minutes_until_open(at(Weekday::Monday, 0, 0)), Some(120));
-        assert_eq!(w.minutes_until_open(at(Weekday::Monday, 3, 0)), Some(0), "open now");
+        assert_eq!(
+            w.minutes_until_open(at(Weekday::Monday, 3, 0)),
+            Some(0),
+            "open now"
+        );
     }
 
     #[test]
     fn minutes_until_open_rolls_to_tomorrow() {
         let w = ScheduleWindow::new("night", 2 * 60, 7 * 60);
         // 08:00 Monday: next open is 02:00 Tuesday, 18 hours away.
-        assert_eq!(w.minutes_until_open(at(Weekday::Monday, 8, 0)), Some(18 * 60));
+        assert_eq!(
+            w.minutes_until_open(at(Weekday::Monday, 8, 0)),
+            Some(18 * 60)
+        );
     }
 
     #[test]
     fn minutes_until_open_skips_disabled_days() {
         let mut w = ScheduleWindow::new("weekend", 2 * 60, 7 * 60);
         w.days = DaySet::WEEKENDS; // Saturday, Sunday
-        // Thursday 08:00 -> Saturday 02:00 is 2 days minus 6 hours.
+                                   // Thursday 08:00 -> Saturday 02:00 is 2 days minus 6 hours.
         assert_eq!(
             w.minutes_until_open(at(Weekday::Thursday, 8, 0)),
             Some(2 * MINUTES_PER_DAY - 6 * 60)
@@ -378,21 +403,34 @@ mod tests {
     #[test]
     fn minutes_until_close_handles_wrap() {
         let w = ScheduleWindow::new("late", 22 * 60, 6 * 60);
-        assert_eq!(w.minutes_until_close(at(Weekday::Monday, 23, 0)), Some(7 * 60));
+        assert_eq!(
+            w.minutes_until_close(at(Weekday::Monday, 23, 0)),
+            Some(7 * 60)
+        );
         assert_eq!(w.minutes_until_close(at(Weekday::Tuesday, 5, 0)), Some(60));
-        assert_eq!(w.minutes_until_close(at(Weekday::Tuesday, 12, 0)), None, "not open");
+        assert_eq!(
+            w.minutes_until_close(at(Weekday::Tuesday, 12, 0)),
+            None,
+            "not open"
+        );
     }
 
     #[test]
     fn disabled_schedule_permits_everything() {
-        let s = Schedule { enabled: false, windows: vec![] };
+        let s = Schedule {
+            enabled: false,
+            windows: vec![],
+        };
         assert!(s.is_open(at(Weekday::Monday, 12, 0)));
         assert!(s.open_window(at(Weekday::Monday, 12, 0)).is_none());
     }
 
     #[test]
     fn enabled_schedule_with_no_windows_permits_nothing() {
-        let s = Schedule { enabled: true, windows: vec![] };
+        let s = Schedule {
+            enabled: true,
+            windows: vec![],
+        };
         assert!(!s.is_open(at(Weekday::Monday, 12, 0)));
         assert_eq!(s.minutes_until_next_open(at(Weekday::Monday, 12, 0)), None);
     }
@@ -406,7 +444,10 @@ mod tests {
                 ScheduleWindow::new("b", 14 * 60, 15 * 60),
             ],
         };
-        assert_eq!(s.minutes_until_next_open(at(Weekday::Monday, 12, 0)), Some(2 * 60));
+        assert_eq!(
+            s.minutes_until_next_open(at(Weekday::Monday, 12, 0)),
+            Some(2 * 60)
+        );
     }
 
     #[test]

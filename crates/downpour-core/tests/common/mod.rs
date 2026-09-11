@@ -146,7 +146,10 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
     let disposition = state.content_disposition.lock().await.clone();
     let total = data.len();
 
-    let range_header = headers.get("range").and_then(|v| v.to_str().ok()).map(String::from);
+    let range_header = headers
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
     if range_header.is_some() {
         state.ranged_requests.fetch_add(1, Ordering::SeqCst);
     }
@@ -225,7 +228,9 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
 
 /// Wraps the payload, honouring a pending "drop the connection" instruction.
 async fn body_for(state: &Arc<ServerState>, payload: Vec<u8>) -> Body {
-    state.bytes_served.fetch_add(payload.len(), Ordering::SeqCst);
+    state
+        .bytes_served
+        .fetch_add(payload.len(), Ordering::SeqCst);
     let truncate_at = *state.truncate_after.lock().await;
     let remaining = state.truncate_times.load(Ordering::SeqCst);
 

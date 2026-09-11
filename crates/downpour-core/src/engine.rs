@@ -42,6 +42,7 @@ pub struct EngineConfig {
 
 /// Counts the UI shows in the sidebar and the tray tooltip.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueueStats {
     pub total: usize,
     pub running: usize,
@@ -90,6 +91,9 @@ struct Inner {
     /// Hands out the next queue position. Seeded past whatever is already in
     /// the database so a restart does not reuse positions.
     next_sequence: AtomicI64,
+    /// Whether the queue had work last tick, so `QueueDrained` fires once on
+    /// the busy-to-idle edge rather than on every tick of an empty queue.
+    was_busy: AtomicBool,
 }
 
 /// Handle to the download engine. Cheap to clone; all clones share one queue.
@@ -115,10 +119,8 @@ impl Engine {
 
         let loaded = store.load_all()?;
         let next_sequence = loaded.iter().map(|i| i.sequence).max().unwrap_or(0) + 1;
-        let items: HashMap<DownloadId, DownloadItem> = loaded
-            .into_iter()
-            .map(|i| (i.id.clone(), i))
-            .collect();
+        let items: HashMap<DownloadId, DownloadItem> =
+            loaded.into_iter().map(|i| (i.id.clone(), i)).collect();
 
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
         let limiter = RateLimiter::new(settings.speed_limit_bps);
@@ -135,6 +137,7 @@ impl Engine {
             last_window_open: Mutex::new(None),
             name_lock: Mutex::new(()),
             next_sequence: AtomicI64::new(next_sequence),
+            was_busy: AtomicBool::new(false),
         });
 
         let engine = Engine { inner };
@@ -151,7 +154,7 @@ impl Engine {
     /// Newest first, which is how the UI lists them.
     pub fn list(&self) -> Vec<DownloadItem> {
         let mut v: Vec<DownloadItem> = self.inner.items.read().values().cloned().collect();
-        v.sort_by(|a, b| b.sequence.cmp(&a.sequence));
+        v.sort_by_key(|i| std::cmp::Reverse(i.sequence));
         v
     }
 
@@ -199,7 +202,8 @@ impl Engine {
     /// URL; it is corrected from `Content-Disposition` once the transfer probes.
     pub fn add(&self, spec: DownloadSpec) -> Result<DownloadId> {
         let mut ids = self.add_many(vec![spec])?;
-        ids.pop().ok_or_else(|| Error::Other("add produced no id".into()))
+        ids.pop()
+            .ok_or_else(|| Error::Other("add produced no id".into()))
     }
 
     /// Adds a batch in one pass.
@@ -275,11 +279,86 @@ impl Engine {
 
             self.inner.store.upsert(&item)?;
             ids.push(item.id.clone());
-            self.inner.items.write().insert(item.id.clone(), item.clone());
-            self.emit(EngineEvent::Added { item: Box::new(item) });
+            self.inner
+                .items
+                .write()
+                .insert(item.id.clone(), item.clone());
+            self.emit(EngineEvent::Added {
+                item: Box::new(item),
+            });
         }
 
         Ok(ids)
+    }
+
+    /// Extracts every http(s) URL from a blob of text and adds them all.
+    ///
+    /// This is the "I have twenty links in my clipboard, or in a .txt file"
+    /// path. Duplicates within the text are collapsed and the original order is
+    /// preserved, so the queue matches what the user pasted.
+    pub fn add_from_text(
+        &self,
+        text: &str,
+        start_mode: StartMode,
+        dest_dir: Option<PathBuf>,
+        source: Option<String>,
+    ) -> Result<Vec<DownloadId>> {
+        let urls = crate::extract_urls(text);
+        if urls.is_empty() {
+            return Ok(Vec::new());
+        }
+        let dir = dest_dir.unwrap_or_default();
+        let specs = urls
+            .into_iter()
+            .map(|url| DownloadSpec {
+                url,
+                headers: Default::default(),
+                filename: None,
+                dest_dir: dir.clone(),
+                connections: None,
+                category: None,
+                start_mode,
+                checksum: None,
+                source: source.clone(),
+            })
+            .collect();
+        self.add_many(specs)
+    }
+
+    /// Moves a download to the front of the queue.
+    ///
+    /// Sequence numbers are only ever compared, never assumed contiguous, so
+    /// jumping the queue is a single assignment below the current minimum
+    /// rather than a renumbering of every other row.
+    pub fn move_to_top(&self, id: &str) -> Result<()> {
+        let min = self
+            .inner
+            .items
+            .read()
+            .values()
+            .map(|i| i.sequence)
+            .min()
+            .unwrap_or(0);
+        self.set_sequence(id, min - 1)
+    }
+
+    /// Moves a download to the back of the queue.
+    pub fn move_to_bottom(&self, id: &str) -> Result<()> {
+        let next = self.inner.next_sequence.fetch_add(1, Ordering::SeqCst);
+        self.set_sequence(id, next)
+    }
+
+    fn set_sequence(&self, id: &str, sequence: i64) -> Result<()> {
+        {
+            let mut items = self.inner.items.write();
+            let item = items
+                .get_mut(id)
+                .ok_or_else(|| Error::NotFound(id.into()))?;
+            item.sequence = sequence;
+        }
+        self.persist(id);
+        self.emit_status(id);
+        Ok(())
     }
 
     // -- Control -----------------------------------------------------------
@@ -309,7 +388,9 @@ impl Engine {
     pub fn force_start(&self, id: &str) -> Result<()> {
         {
             let mut items = self.inner.items.write();
-            let item = items.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+            let item = items
+                .get_mut(id)
+                .ok_or_else(|| Error::NotFound(id.into()))?;
             item.scheduled = false;
         }
         self.persist(id);
@@ -438,7 +519,9 @@ impl Engine {
     pub fn set_scheduled(&self, id: &str, scheduled: bool) -> Result<()> {
         {
             let mut items = self.inner.items.write();
-            let item = items.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+            let item = items
+                .get_mut(id)
+                .ok_or_else(|| Error::NotFound(id.into()))?;
             item.scheduled = scheduled;
             // Move it to the matching waiting state so the change is visible
             // immediately rather than at the next pump tick.
@@ -543,7 +626,9 @@ impl Engine {
     fn set_status(&self, id: &str, status: DownloadStatus, error: Option<String>) -> Result<()> {
         {
             let mut items = self.inner.items.write();
-            let item = items.get_mut(id).ok_or_else(|| Error::NotFound(id.into()))?;
+            let item = items
+                .get_mut(id)
+                .ok_or_else(|| Error::NotFound(id.into()))?;
             item.status = status;
             item.error = error;
             if !status.is_active() {
@@ -591,6 +676,37 @@ impl Engine {
 
         self.promote_waiting(schedule_active, window_open);
         self.fill_free_slots(&settings, window_open);
+        self.detect_drain();
+    }
+
+    /// Fires `QueueDrained` on the busy-to-idle edge.
+    ///
+    /// Edge-triggered on purpose: a level-triggered version would fire twice a
+    /// second forever on an empty queue, and the shell would shut the machine
+    /// down the moment the app opened.
+    fn detect_drain(&self) {
+        let busy = {
+            let items = self.inner.items.read();
+            items.values().any(|i| {
+                i.status.is_active()
+                    || matches!(i.status, DownloadStatus::Queued | DownloadStatus::Scheduled)
+            })
+        };
+        let was_busy = self.inner.was_busy.swap(busy, Ordering::SeqCst);
+        if was_busy && !busy {
+            let items = self.inner.items.read();
+            let completed = items
+                .values()
+                .filter(|i| i.status == DownloadStatus::Completed)
+                .count();
+            let failed = items
+                .values()
+                .filter(|i| i.status == DownloadStatus::Failed)
+                .count();
+            drop(items);
+            tracing::info!(completed, failed, "queue drained");
+            self.emit(EngineEvent::QueueDrained { completed, failed });
+        }
     }
 
     fn announce_window_changes(
@@ -600,7 +716,11 @@ impl Engine {
         window_open: bool,
         now: LocalMoment,
     ) {
-        let observed = if schedule_active { Some(window_open) } else { None };
+        let observed = if schedule_active {
+            Some(window_open)
+        } else {
+            None
+        };
         let mut last = self.inner.last_window_open.lock();
         if *last == observed {
             return;
@@ -609,14 +729,11 @@ impl Engine {
         drop(last);
 
         if let Some(open) = observed {
-            let label = settings
-                .schedule
-                .open_window(now)
-                .map(|w| {
-                    w.label
-                        .clone()
-                        .unwrap_or_else(|| format!("{}-{}", w.format_start(), w.format_end()))
-                });
+            let label = settings.schedule.open_window(now).map(|w| {
+                w.label
+                    .clone()
+                    .unwrap_or_else(|| format!("{}-{}", w.format_start(), w.format_end()))
+            });
             // The limit can differ inside a window, so re-apply it on every
             // transition rather than only when settings change.
             self.inner
@@ -650,7 +767,9 @@ impl Engine {
             };
 
             let mut items = self.inner.items.write();
-            let Some(item) = items.get_mut(&id) else { continue };
+            let Some(item) = items.get_mut(&id) else {
+                continue;
+            };
             item.downloaded_bytes = downloaded;
             item.total_bytes = total.or(item.total_bytes);
             item.speed_bps = speed;
@@ -776,7 +895,10 @@ impl Engine {
             tracker: Mutex::new(SpeedTracker::new(item.downloaded_bytes)),
             started_at: std::time::Instant::now(),
         });
-        self.inner.running.write().insert(id.to_string(), Arc::clone(&run));
+        self.inner
+            .running
+            .write()
+            .insert(id.to_string(), Arc::clone(&run));
 
         {
             let mut items = self.inner.items.write();
@@ -839,7 +961,10 @@ impl Engine {
 
         tokio::fs::create_dir_all(&item.dest_dir)
             .await
-            .map_err(|source| Error::Io { path: item.dest_dir.clone(), source })?;
+            .map_err(|source| Error::Io {
+                path: item.dest_dir.clone(),
+                source,
+            })?;
 
         let filename = match self.claim_filename(
             item,
@@ -950,7 +1075,10 @@ impl Engine {
                     .map_err(|source| Error::Io { path, source })?;
                 Ok(Claim::Named(fallback))
             }
-            Err(source) => Err(Error::Io { path: claim_path, source }),
+            Err(source) => Err(Error::Io {
+                path: claim_path,
+                source,
+            }),
         }
     }
 
@@ -981,7 +1109,10 @@ impl Engine {
                     }
                 }
                 let _ = self.set_status(id, DownloadStatus::Completed, None);
-                self.emit(EngineEvent::Completed { id: id.to_string(), path });
+                self.emit(EngineEvent::Completed {
+                    id: id.to_string(),
+                    path,
+                });
             }
             Err(Error::Paused) => {
                 // Back to whichever waiting state it belongs in, so a window
@@ -1007,7 +1138,10 @@ impl Engine {
                 let message = e.to_string();
                 tracing::warn!(id, error = %message, "download failed");
                 let _ = self.set_status(id, DownloadStatus::Failed, Some(message.clone()));
-                self.emit(EngineEvent::Failed { id: id.to_string(), error: message });
+                self.emit(EngineEvent::Failed {
+                    id: id.to_string(),
+                    error: message,
+                });
             }
         }
     }

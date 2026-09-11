@@ -179,7 +179,7 @@ pub fn plan_segments(total: u64, count: u8) -> Vec<Segment> {
 pub fn connections_for_size(total: u64, max: u8) -> u8 {
     const MIB: u64 = 1024 * 1024;
     let by_size = match total {
-        0..=1_048_575 => 1,          // < 1 MiB
+        0..=1_048_575 => 1, // < 1 MiB
         v if v < 8 * MIB => 2,
         v if v < 64 * MIB => 4,
         v if v < 512 * MIB => 8,
@@ -211,7 +211,10 @@ mod tests {
                 let segs = plan_segments(total, count);
                 let mut expected = 0u64;
                 for s in &segs {
-                    assert_eq!(s.start, expected, "gap at {expected} (total={total}, n={count})");
+                    assert_eq!(
+                        s.start, expected,
+                        "gap at {expected} (total={total}, n={count})"
+                    );
                     assert!(s.end >= s.start);
                     expected = s.end + 1;
                 }
@@ -249,7 +252,11 @@ mod tests {
         assert_eq!(connections_for_size(4 * 1024 * 1024, 16), 2);
         assert_eq!(connections_for_size(32 * 1024 * 1024, 16), 4);
         assert_eq!(connections_for_size(1024 * 1024 * 1024, 16), 16);
-        assert_eq!(connections_for_size(1024 * 1024 * 1024, 4), 4, "user cap wins");
+        assert_eq!(
+            connections_for_size(1024 * 1024 * 1024, 4),
+            4,
+            "user cap wins"
+        );
         assert_eq!(connections_for_size(1024 * 1024 * 1024, 0), 1, "never zero");
     }
 
@@ -259,7 +266,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f.dpmeta");
 
-        let sc = Sidecar::new("https://example.com/f.bin".into(), info(), plan_segments(1000, 4), 1000);
+        let sc = Sidecar::new(
+            "https://example.com/f.bin".into(),
+            info(),
+            plan_segments(1000, 4),
+            1000,
+        );
         sc.save(&path).unwrap();
         let loaded = Sidecar::load(&path).unwrap();
         assert_eq!(loaded.segments, sc.segments);
@@ -338,7 +350,10 @@ mod tests {
         let mut fresh = info();
         fresh.etag = Some("W/\"xyz\"".into());
         fresh.last_modified = Some("Thu, 22 Oct 2026 07:28:00 GMT".into());
-        assert!(sc.check_still_valid(&fresh).is_err(), "changed Last-Modified must be refused");
+        assert!(
+            sc.check_still_valid(&fresh).is_err(),
+            "changed Last-Modified must be refused"
+        );
     }
 
     #[test]
@@ -372,7 +387,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("f.dpmeta");
         std::fs::write(&path, b"{not json").unwrap();
-        assert!(matches!(Sidecar::load(&path), Err(Error::CorruptMetadata(_))));
+        assert!(matches!(
+            Sidecar::load(&path),
+            Err(Error::CorruptMetadata(_))
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -384,7 +402,10 @@ mod tests {
         let mut sc = Sidecar::new("u".into(), info(), plan_segments(1000, 2), 1000);
         sc.version = 999;
         std::fs::write(&path, serde_json::to_vec(&sc).unwrap()).unwrap();
-        assert!(matches!(Sidecar::load(&path), Err(Error::CorruptMetadata(_))));
+        assert!(matches!(
+            Sidecar::load(&path),
+            Err(Error::CorruptMetadata(_))
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 }

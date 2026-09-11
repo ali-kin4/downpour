@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Downpour",
+  "version": "0.1.0",
+  "description": "Hand downloads from your browser to the Downpour download manager, cookies and all.",
+  "minimum_chrome_version": "102",
+  "icons": {
+    "32": "icons/32x32.png",
+    "128": "icons/128x128.png"
+  },
+  "permissions": [
+    "downloads",
+    "storage",
+    "contextMenus",
+    "cookies",
+    "scripting"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Downpour",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "32": "icons/32x32.png",
+      "128": "icons/128x128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

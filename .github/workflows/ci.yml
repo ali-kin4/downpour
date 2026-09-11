@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A newer push to the same branch supersedes the old one; there is no value in
+# finishing a build for a commit nobody will look at again.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail on warnings from rustc as well as clippy, so a warning cannot be
+  # introduced through a path clippy does not lint.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        # dtolnay/rust-toolchain publishes no major version tag; `@stable`
+        # is the pinned reference for the stable channel.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Keeps the registry, the git checkouts and target/ across runs.
+          cache-on-failure: true
+
+      # Formatting needs no build artifacts, so it runs first and fails fast.
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # No `cache: npm` here: setup-node hard-fails when it cannot find a
+          # lockfile, and the frontend may not have landed yet.
+
+      # src-tauri points `frontendDist` at ../dist, and `tauri::generate_context!`
+      # resolves that directory at compile time. dist/ is gitignored, so a clean
+      # checkout cannot even *check* the workspace until it exists. Build the
+      # real frontend when there is one; otherwise drop in a placeholder so the
+      # Rust jobs are not blocked on the frontend landing.
+      - name: Materialize frontend dist/
+        shell: bash
+        run: |
+          if [ -f package.json ]; then
+            if [ -f package-lock.json ]; then npm ci; else npm install; fi
+            npm run build
+          else
+            echo "No package.json yet - writing a placeholder dist/ for tauri-build."
+            mkdir -p dist
+            printf '<!doctype html><meta charset="utf-8"><title>Downpour</title>\n' > dist/index.html
+          fi
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+  extension:
+    name: Extension syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # A job-level `if` cannot see the working tree, so the guard lives here.
+      # Both "no extension/ directory" and "extension/ exists but is empty" must
+      # exit 0 - hence `find | xargs -r` rather than a shell glob, which would
+      # otherwise hand `node --check` the literal pattern.
+      - name: Check JavaScript syntax
+        shell: bash
+        run: |
+          if [ ! -d extension ]; then
+            echo "No extension/ directory - nothing to check."
+            exit 0
+          fi
+          count=$(find extension -name '*.js' -not -path '*/node_modules/*' | wc -l)
+          echo "Found $count JavaScript file(s)."
+          find extension -name '*.js' -not -path '*/node_modules/*' -print0 \
+            | xargs -0 -r -n1 node --check
+
+      - name: Check JSON syntax
+        shell: bash
+        run: |
+          if [ ! -d extension ]; then
+            echo "No extension/ directory - nothing to check."
+            exit 0
+          fi
+          count=$(find extension -name '*.json' -not -path '*/node_modules/*' | wc -l)
+          echo "Found $count JSON file(s)."
+          find extension -name '*.json' -not -path '*/node_modules/*' -print0 \
+            | xargs -0 -r -n1 node -e \
+              'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log("ok: " + process.argv[1]);'

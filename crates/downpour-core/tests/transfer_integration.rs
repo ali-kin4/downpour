@@ -10,9 +10,7 @@ use common::{payload, sha256, wait_for, Mode, TempDir};
 use downpour_core::model::RemoteInfo;
 use downpour_core::probe;
 use downpour_core::throttle::RateLimiter;
-use downpour_core::transfer::{
-    self, Control, TransferConfig, TransferContext, TransferProgress,
-};
+use downpour_core::transfer::{self, Control, TransferConfig, TransferContext, TransferProgress};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -35,7 +33,9 @@ struct Paths {
 
 impl Paths {
     fn new() -> Self {
-        Self { dir: TempDir::new() }
+        Self {
+            dir: TempDir::new(),
+        }
     }
     fn final_path(&self) -> std::path::PathBuf {
         self.dir.join("out.bin")
@@ -72,7 +72,10 @@ async fn segmented_download_reassembles_to_the_correct_checksum() {
     assert!(remote.supports_range, "honest server must advertise ranges");
     assert_eq!(remote.size, Some(data.len() as u64));
 
-    let config = TransferConfig { connections: 8, ..Default::default() };
+    let config = TransferConfig {
+        connections: 8,
+        ..Default::default()
+    };
     let out = transfer::run_transfer(
         &c,
         &remote,
@@ -85,7 +88,11 @@ async fn segmented_download_reassembles_to_the_correct_checksum() {
     .unwrap();
 
     assert_eq!(out.total_bytes, data.len() as u64);
-    assert_eq!(file_sha(&paths.final_path()), expected, "content must match byte for byte");
+    assert_eq!(
+        file_sha(&paths.final_path()),
+        expected,
+        "content must match byte for byte"
+    );
     assert!(
         server.state.ranged_count() >= 4,
         "expected several ranged requests, saw {}",
@@ -106,7 +113,10 @@ async fn every_connection_writes_at_its_own_offset() {
     let c = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
     let remote = probe_url(&c.client, &server.url("/file")).await;
 
-    let config = TransferConfig { connections: 16, ..Default::default() };
+    let config = TransferConfig {
+        connections: 16,
+        ..Default::default()
+    };
     transfer::run_transfer(
         &c,
         &remote,
@@ -139,7 +149,10 @@ async fn a_server_that_lies_about_range_support_still_produces_a_correct_file() 
         "the probe must not believe an advertisement contradicted by the response"
     );
 
-    let config = TransferConfig { connections: 8, ..Default::default() };
+    let config = TransferConfig {
+        connections: 8,
+        ..Default::default()
+    };
     transfer::run_transfer(
         &c,
         &remote,
@@ -151,7 +164,11 @@ async fn a_server_that_lies_about_range_support_still_produces_a_correct_file() 
     .await
     .unwrap();
 
-    assert_eq!(file_sha(&paths.final_path()), expected, "fell back cleanly, no corruption");
+    assert_eq!(
+        file_sha(&paths.final_path()),
+        expected,
+        "fell back cleanly, no corruption"
+    );
 }
 
 #[tokio::test]
@@ -164,7 +181,11 @@ async fn a_server_without_range_support_downloads_in_one_stream() {
     let c = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
     let remote = probe_url(&c.client, &server.url("/file")).await;
     assert!(!remote.supports_range);
-    assert_eq!(remote.size, Some(data.len() as u64), "size still known from Content-Length");
+    assert_eq!(
+        remote.size,
+        Some(data.len() as u64),
+        "size still known from Content-Length"
+    );
 
     transfer::run_transfer(
         &c,
@@ -219,7 +240,11 @@ async fn a_dropped_connection_is_retried_and_the_file_is_still_correct() {
     let c = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
     let remote = probe_url(&c.client, &server.url("/file")).await;
 
-    let config = TransferConfig { connections: 4, max_retries: 20, ..Default::default() };
+    let config = TransferConfig {
+        connections: 4,
+        max_retries: 20,
+        ..Default::default()
+    };
     transfer::run_transfer(
         &c,
         &remote,
@@ -252,14 +277,18 @@ async fn pausing_writes_a_sidecar_and_resuming_finishes_the_file() {
     let c = ctx(control.clone(), limiter, Arc::clone(&progress));
     let remote = probe_url(&c.client, &server.url("/file")).await;
 
-    let config = TransferConfig { connections: 4, ..Default::default() };
+    let config = TransferConfig {
+        connections: 4,
+        ..Default::default()
+    };
     let (fp, pp, mp) = (paths.final_path(), paths.part_path(), paths.meta_path());
     let remote2 = remote.clone();
     let cfg2 = config.clone();
 
-    let task = tokio::spawn(async move {
-        transfer::run_transfer(&c, &remote2, &fp, &pp, &mp, &cfg2).await
-    });
+    let task =
+        tokio::spawn(
+            async move { transfer::run_transfer(&c, &remote2, &fp, &pp, &mp, &cfg2).await },
+        );
 
     // Wait until real progress exists, then pause.
     let moved = {
@@ -278,18 +307,34 @@ async fn pausing_writes_a_sidecar_and_resuming_finishes_the_file() {
         "expected Paused, got {result:?}"
     );
 
-    assert!(paths.meta_path().exists(), "a pause must leave a resume sidecar");
-    assert!(paths.part_path().exists(), "a pause must leave the part file");
-    assert!(!paths.final_path().exists(), "nothing is renamed until it is complete");
+    assert!(
+        paths.meta_path().exists(),
+        "a pause must leave a resume sidecar"
+    );
+    assert!(
+        paths.part_path().exists(),
+        "a pause must leave the part file"
+    );
+    assert!(
+        !paths.final_path().exists(),
+        "nothing is renamed until it is complete"
+    );
 
     let partial = progress.downloaded.load(Ordering::Relaxed);
-    assert!(partial > 0 && partial < data.len() as u64, "paused at {partial} bytes");
+    assert!(
+        partial > 0 && partial < data.len() as u64,
+        "paused at {partial} bytes"
+    );
 
     // Resume with a fresh control and no throttle. The server's counters are
     // reset first so the assertion below measures only the resume.
     server.state.reset_counters();
     let progress2: Arc<TransferProgress> = Default::default();
-    let c2 = ctx(Control::new(), RateLimiter::unlimited(), Arc::clone(&progress2));
+    let c2 = ctx(
+        Control::new(),
+        RateLimiter::unlimited(),
+        Arc::clone(&progress2),
+    );
     let remote_again = probe_url(&c2.client, &server.url("/file")).await;
     transfer::run_transfer(
         &c2,
@@ -302,7 +347,11 @@ async fn pausing_writes_a_sidecar_and_resuming_finishes_the_file() {
     .await
     .unwrap();
 
-    assert_eq!(file_sha(&paths.final_path()), expected, "resume produced the wrong bytes");
+    assert_eq!(
+        file_sha(&paths.final_path()),
+        expected,
+        "resume produced the wrong bytes"
+    );
     assert_eq!(
         progress2.downloaded.load(Ordering::Relaxed),
         data.len() as u64,
@@ -329,15 +378,24 @@ async fn a_changed_etag_forces_a_clean_restart_instead_of_stitching() {
 
     let control = Control::new();
     let progress: Arc<TransferProgress> = Default::default();
-    let c = ctx(control.clone(), RateLimiter::new(3 * 1024 * 1024), Arc::clone(&progress));
+    let c = ctx(
+        control.clone(),
+        RateLimiter::new(3 * 1024 * 1024),
+        Arc::clone(&progress),
+    );
     let remote = probe_url(&c.client, &server.url("/file")).await;
-    let config = TransferConfig { connections: 4, ..Default::default() };
+    let config = TransferConfig {
+        connections: 4,
+        ..Default::default()
+    };
 
     let (fp, pp, mp) = (paths.final_path(), paths.part_path(), paths.meta_path());
     let remote2 = remote.clone();
     let cfg2 = config.clone();
     let task =
-        tokio::spawn(async move { transfer::run_transfer(&c, &remote2, &fp, &pp, &mp, &cfg2).await });
+        tokio::spawn(
+            async move { transfer::run_transfer(&c, &remote2, &fp, &pp, &mp, &cfg2).await },
+        );
 
     let moved = {
         let p = Arc::clone(&progress);
@@ -354,7 +412,10 @@ async fn a_changed_etag_forces_a_clean_restart_instead_of_stitching() {
     // The upstream file is replaced with entirely different content.
     let replacement = payload(6 * 1024 * 1024 + 7);
     let replacement_sha = sha256(&replacement);
-    server.state.replace_data(replacement.clone(), Some("\"v2\"")).await;
+    server
+        .state
+        .replace_data(replacement.clone(), Some("\"v2\""))
+        .await;
 
     let c2 = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
     let fresh = probe_url(&c2.client, &server.url("/file")).await;
@@ -400,7 +461,10 @@ async fn a_checksum_mismatch_fails_before_the_rename() {
     .await
     .unwrap_err();
 
-    assert!(matches!(err, downpour_core::Error::ChecksumMismatch { .. }), "got {err:?}");
+    assert!(
+        matches!(err, downpour_core::Error::ChecksumMismatch { .. }),
+        "got {err:?}"
+    );
     assert!(
         !paths.final_path().exists(),
         "a file that failed verification must never be renamed into place"
@@ -455,8 +519,14 @@ async fn a_successful_download_leaves_no_part_or_sidecar_behind() {
     .unwrap();
 
     assert!(paths.final_path().exists());
-    assert!(!paths.part_path().exists(), "the part file must be renamed, not copied");
-    assert!(!paths.meta_path().exists(), "the sidecar must be cleaned up");
+    assert!(
+        !paths.part_path().exists(),
+        "the part file must be renamed, not copied"
+    );
+    assert!(
+        !paths.meta_path().exists(),
+        "the sidecar must be cleaned up"
+    );
 }
 
 #[tokio::test]
@@ -467,7 +537,11 @@ async fn cancelling_stops_the_transfer_without_renaming() {
 
     let control = Control::new();
     let progress: Arc<TransferProgress> = Default::default();
-    let c = ctx(control.clone(), RateLimiter::new(2 * 1024 * 1024), Arc::clone(&progress));
+    let c = ctx(
+        control.clone(),
+        RateLimiter::new(2 * 1024 * 1024),
+        Arc::clone(&progress),
+    );
     let remote = probe_url(&c.client, &server.url("/file")).await;
 
     let (fp, pp, mp) = (paths.final_path(), paths.part_path(), paths.meta_path());
@@ -487,7 +561,10 @@ async fn cancelling_stops_the_transfer_without_renaming() {
     control.cancel();
 
     let result = task.await.unwrap();
-    assert!(matches!(result, Err(downpour_core::Error::Cancelled)), "got {result:?}");
+    assert!(
+        matches!(result, Err(downpour_core::Error::Cancelled)),
+        "got {result:?}"
+    );
     assert!(!paths.final_path().exists());
 }
 
@@ -498,7 +575,10 @@ async fn a_server_error_is_reported_rather_than_producing_an_empty_file() {
     let err = probe::probe(&c.client, &server.url("/file"), &BTreeMap::new())
         .await
         .unwrap_err();
-    assert!(matches!(err, downpour_core::Error::BadStatus { status: 500, .. }), "got {err:?}");
+    assert!(
+        matches!(err, downpour_core::Error::BadStatus { status: 500, .. }),
+        "got {err:?}"
+    );
 }
 
 #[tokio::test]
@@ -508,7 +588,11 @@ async fn a_speed_limit_actually_limits_throughput() {
     let paths = Paths::new();
 
     // 2 MB/s against 4 MB should take roughly two seconds, minus the burst.
-    let c = ctx(Control::new(), RateLimiter::new(2 * 1024 * 1024), Default::default());
+    let c = ctx(
+        Control::new(),
+        RateLimiter::new(2 * 1024 * 1024),
+        Default::default(),
+    );
     let remote = probe_url(&c.client, &server.url("/file")).await;
 
     let start = std::time::Instant::now();
@@ -518,7 +602,10 @@ async fn a_speed_limit_actually_limits_throughput() {
         &paths.final_path(),
         &paths.part_path(),
         &paths.meta_path(),
-        &TransferConfig { connections: 8, ..Default::default() },
+        &TransferConfig {
+            connections: 8,
+            ..Default::default()
+        },
     )
     .await
     .unwrap();
@@ -548,7 +635,10 @@ async fn a_tiny_file_downloads_correctly() {
         &paths.final_path(),
         &paths.part_path(),
         &paths.meta_path(),
-        &TransferConfig { connections: 16, ..Default::default() },
+        &TransferConfig {
+            connections: 16,
+            ..Default::default()
+        },
     )
     .await
     .unwrap();

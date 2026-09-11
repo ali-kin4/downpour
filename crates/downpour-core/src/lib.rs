@@ -53,7 +53,8 @@ pub fn extract_urls(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    for raw in text.split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == '"' || c == '\'')
+    for raw in
+        text.split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == '"' || c == '\'')
     {
         let candidate = raw.trim();
         if candidate.len() < 8 {

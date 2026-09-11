@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/ali-kin4/downpour/discussions
+    about: Usage questions, "is this a bug?", and half-formed ideas go here.
+  - name: Report a security vulnerability
+    url: https://github.com/ali-kin4/downpour/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.

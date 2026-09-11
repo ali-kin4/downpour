@@ -39,7 +39,9 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         Self::configure(&conn)?;
-        let store = Self { conn: Arc::new(Mutex::new(conn)) };
+        let store = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -48,7 +50,9 @@ impl Store {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         Self::configure(&conn)?;
-        let store = Self { conn: Arc::new(Mutex::new(conn)) };
+        let store = Self {
+            conn: Arc::new(Mutex::new(conn)),
+        };
         store.migrate()?;
         Ok(store)
     }
@@ -248,7 +252,10 @@ impl Store {
         }
         let conn = self.conn.lock();
         let placeholders = vec!["?"; statuses.len()].join(",");
-        let names: Vec<String> = statuses.iter().map(|s| status_str(*s).to_string()).collect();
+        let names: Vec<String> = statuses
+            .iter()
+            .map(|s| status_str(*s).to_string())
+            .collect();
 
         let sql = format!("SELECT id FROM downloads WHERE status IN ({placeholders})");
         let mut stmt = conn.prepare(&sql)?;
@@ -267,7 +274,9 @@ impl Store {
     pub fn load_settings(&self) -> Result<Settings> {
         let conn = self.conn.lock();
         let raw: Option<String> = conn
-            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |r| r.get(0))
+            .query_row("SELECT value FROM kv WHERE key = 'settings'", [], |r| {
+                r.get(0)
+            })
             .optional()?;
         drop(conn);
 
@@ -327,6 +336,9 @@ fn parse_status(s: &str) -> Option<DownloadStatus> {
 }
 
 #[cfg(test)]
+// Varying one field off a default is the clearest way to express these
+// cases; struct-update syntax would bury the field under test.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::model::DownloadStatus;
@@ -468,7 +480,10 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         s.conn
             .lock()
-            .execute("INSERT INTO kv (key, value) VALUES ('settings', 'not json')", [])
+            .execute(
+                "INSERT INTO kv (key, value) VALUES ('settings', 'not json')",
+                [],
+            )
             .unwrap();
         let back = s.load_settings().unwrap();
         assert_eq!(back.max_concurrent_downloads, 3);
@@ -481,7 +496,7 @@ mod tests {
             .lock()
             .execute(
                 "INSERT INTO kv (key, value) VALUES ('settings', ?1)",
-                params![r#"{"max_concurrent_downloads": 0, "rpc_port": 1}"#],
+                params![r#"{"maxConcurrentDownloads": 0, "rpcPort": 1}"#],
             )
             .unwrap();
         let back = s.load_settings().unwrap();

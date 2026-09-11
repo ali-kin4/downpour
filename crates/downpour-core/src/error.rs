@@ -68,9 +68,7 @@ impl Error {
     /// Whether the worker loop should retry after a backoff rather than fail.
     pub fn is_transient(&self) -> bool {
         match self {
-            Error::Network(e) => {
-                e.is_timeout() || e.is_connect() || e.is_request() || e.is_body()
-            }
+            Error::Network(e) => e.is_timeout() || e.is_connect() || e.is_request() || e.is_body(),
             Error::PlainIo(e) => matches!(
                 e.kind(),
                 std::io::ErrorKind::ConnectionReset

@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest something Downpour should be able to do.
+title: "[Feature]: "
+labels: ["enhancement", "needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: the README's roadmap lists what is already planned but
+        not yet built. A +1 on an existing issue is more useful than a duplicate.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: >
+        Describe the situation, not the solution. "I download 40 lecture videos
+        a week and have to rename each one" tells us more than "add a rename
+        button".
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like Downpour to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Downpour would this touch?
+      options:
+        - Download engine
+        - Scheduling
+        - Bandwidth limiting
+        - Browser extension / local RPC
+        - Desktop UI
+        - CLI
+        - Not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds you have tried
+    validations:
+      required: false

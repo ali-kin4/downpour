@@ -16,6 +16,7 @@ pub const DEFAULT_USER_AGENT: &str =
 
 /// A folder rule: files whose extension matches land in this subfolder.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct Category {
     pub name: String,
     /// Lowercase, without the leading dot.
@@ -39,25 +40,56 @@ impl Category {
 
 pub fn default_categories() -> Vec<Category> {
     vec![
-        Category::new("Video", "clapperboard", "Video", &[
-            "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts", "m2ts",
-        ]),
-        Category::new("Audio", "music", "Audio", &[
-            "mp3", "flac", "wav", "aac", "ogg", "opus", "m4a", "wma", "alac", "aiff",
-        ]),
-        Category::new("Documents", "file-text", "Documents", &[
-            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "epub", "mobi",
-            "txt", "rtf", "csv",
-        ]),
-        Category::new("Archives", "archive", "Archives", &[
-            "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst", "iso", "cab",
-        ]),
-        Category::new("Programs", "app-window", "Programs", &[
-            "exe", "msi", "msix", "appx", "dmg", "pkg", "deb", "rpm", "apk", "appimage",
-        ]),
-        Category::new("Images", "image", "Images", &[
-            "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "tiff", "heic", "avif", "raw",
-        ]),
+        Category::new(
+            "Video",
+            "clapperboard",
+            "Video",
+            &[
+                "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg", "ts",
+                "m2ts",
+            ],
+        ),
+        Category::new(
+            "Audio",
+            "music",
+            "Audio",
+            &[
+                "mp3", "flac", "wav", "aac", "ogg", "opus", "m4a", "wma", "alac", "aiff",
+            ],
+        ),
+        Category::new(
+            "Documents",
+            "file-text",
+            "Documents",
+            &[
+                "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "epub", "mobi",
+                "txt", "rtf", "csv",
+            ],
+        ),
+        Category::new(
+            "Archives",
+            "archive",
+            "Archives",
+            &[
+                "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "zst", "iso", "cab",
+            ],
+        ),
+        Category::new(
+            "Programs",
+            "app-window",
+            "Programs",
+            &[
+                "exe", "msi", "msix", "appx", "dmg", "pkg", "deb", "rpm", "apk", "appimage",
+            ],
+        ),
+        Category::new(
+            "Images",
+            "image",
+            "Images",
+            &[
+                "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "tiff", "heic", "avif", "raw",
+            ],
+        ),
     ]
 }
 
@@ -87,7 +119,7 @@ pub enum OnQueueComplete {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub download_dir: PathBuf,
 
@@ -214,9 +246,7 @@ impl Settings {
             return None;
         }
         let ext = filename.rsplit_once('.')?.1.to_ascii_lowercase();
-        self.categories
-            .iter()
-            .find(|c| c.extensions.iter().any(|e| *e == ext))
+        self.categories.iter().find(|c| c.extensions.contains(&ext))
     }
 
     /// Full destination directory for a given filename.
@@ -282,7 +312,7 @@ fn dirs_download() -> Option<PathBuf> {
     None
 }
 
-/// 32 hex characters of entropy for the loopback RPC token.
+/// 64 hex characters of entropy for the loopback RPC token.
 ///
 /// This is what stops any web page on the machine from POSTing downloads into
 /// the app, so it is generated from a real UUID rather than anything guessable.
@@ -295,6 +325,9 @@ pub fn generate_token() -> String {
 }
 
 #[cfg(test)]
+// Varying one field off a default is the clearest way to express these
+// cases; struct-update syntax would bury the field under test.
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -362,13 +395,20 @@ mod tests {
         assert_eq!(s.effective_speed_limit(false), 5_000_000);
         assert_eq!(s.effective_speed_limit(true), 1_000_000);
         s.scheduled_speed_limit_bps = 0;
-        assert_eq!(s.effective_speed_limit(true), 5_000_000, "0 means unset, not zero speed");
+        assert_eq!(
+            s.effective_speed_limit(true),
+            5_000_000,
+            "0 means unset, not zero speed"
+        );
     }
 
     #[test]
     fn clipboard_filter_matches_extensions_ignoring_query_strings() {
         let mut s = Settings::default();
-        assert!(s.clipboard_matches("https://x.com/anything"), "empty list matches all");
+        assert!(
+            s.clipboard_matches("https://x.com/anything"),
+            "empty list matches all"
+        );
         s.clipboard_extensions = vec!["zip".into(), ".ISO".into()];
         assert!(s.clipboard_matches("https://x.com/a.zip"));
         assert!(s.clipboard_matches("https://x.com/a.iso?token=1"));
@@ -388,7 +428,7 @@ mod tests {
     #[test]
     fn partial_json_fills_in_defaults() {
         // A config file written by an older version must still load.
-        let s: Settings = serde_json::from_str(r#"{"max_concurrent_downloads": 7}"#).unwrap();
+        let s: Settings = serde_json::from_str(r#"{"maxConcurrentDownloads": 7}"#).unwrap();
         assert_eq!(s.max_concurrent_downloads, 7);
         assert_eq!(s.max_connections_per_download, 8, "missing field defaulted");
         assert!(!s.categories.is_empty());

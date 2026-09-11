@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# The only write this job needs is the one that creates the release and uploads
+# the installers to it.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish Windows installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "^2" --locked
+
+      # A direct `cargo tauri build` rather than tauri-apps/tauri-action.
+      # tauri-action wants to own release creation itself, which would fight the
+      # separate checksum, changelog-notes and prerelease steps below; and the
+      # artifact paths under target/release/bundle/ are deterministic, so there
+      # is nothing tauri-action would give us that we need here.
+      - name: Build installers
+        run: cargo tauri build
+
+      # Globbed rather than hardcoded to 0.1.0, so a version bump does not
+      # silently produce a release with no files attached.
+      - name: Collect artifacts and checksums
+        id: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find target/release/bundle/msi -name '*.msi' -exec cp {} release/ \;
+          find target/release/bundle/nsis -name '*-setup.exe' -exec cp {} release/ \;
+
+          if [ -z "$(ls -A release)" ]; then
+            echo "::error::No installers were produced under target/release/bundle/"
+            exit 1
+          fi
+
+          # sha256sum format ("<hash>  <bare filename>") so `sha256sum -c` and
+          # `certutil`/`Get-FileHash` comparisons both work. Bare filenames only,
+          # never the runner's absolute paths.
+          cd release
+          for f in *; do
+            if [ -f "$f" ]; then sha256sum "$f"; fi
+          done > ../checksums.txt
+          mv ../checksums.txt checksums.txt
+          cat checksums.txt
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+
+          # Everything between "## [<version>]" and the next "## " heading.
+          # Matched with index() rather than a regex so the brackets and dots in
+          # the version need no escaping. The link-reference block at the bottom
+          # of the file also terminates the section.
+          notes="$(awk -v hdr="## [$version]" '
+            index($0, hdr) == 1 { grab = 1; next }
+            grab && /^## / { exit }
+            grab && /^\[[^]]+\]: / { exit }
+            grab { print }
+          ' CHANGELOG.md || true)"
+
+          # Drop leading blank lines; trailing ones are harmless in a body.
+          notes="$(printf '%s\n' "$notes" | sed -e '/./,$!d')"
+
+          if [ -z "$notes" ]; then
+            echo "No CHANGELOG.md section found for $version; falling back to the tag name."
+            notes="Release $tag"
+          fi
+
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            echo "$notes"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Downpour ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.body }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          fail_on_unmatched_files: true
+          files: |
+            release/*.msi
+            release/*.exe
+            release/checksums.txt

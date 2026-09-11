@@ -84,6 +84,10 @@ Used by the extension to show "Downpour is running" and to find the port.
 { "app": "downpour", "version": "0.1.0", "protocol": 1, "ok": true }
 ```
 
+On a `protocol` mismatch a client should **warn and continue**, not refuse: a
+newer app is expected to keep serving version 1 routes, and hard-failing would
+break every user whose extension updates on a different schedule to their app.
+
 Unauthenticated on purpose: presence is not a secret, and requiring a token to
 detect the app would make the extension's setup flow impossible to explain.
 
@@ -103,7 +107,11 @@ round-tripping per download.
 ```
 
 - `includeExtensions` empty means "capture everything not excluded".
-- `minSizeBytes` `0` means no size floor.
+- `minSizeBytes` `0` means no size floor. The floor is **best-effort and
+  client-side**: at the moment a browser extension decides whether to
+  intercept, it frequently does not yet know the size. A client that cannot
+  determine a size should intercept rather than skip, and let the app's own
+  probe be authoritative.
 - The extension must treat this as advisory and cache it for ~30s.
 
 ### `POST /api/v1/downloads` — authenticated
@@ -157,13 +165,24 @@ Adds one download.
 
 ### `POST /api/v1/downloads/batch` — authenticated
 
-Same item shape, for "download all links on this page".
+For "download all links on this page". Each entry accepts **every field** the
+single-download endpoint accepts, `headers` included — a batch of session-gated
+links is useless without per-item cookies.
 
 **Request**
 
 ```json
-{ "items": [ { "url": "…" }, { "url": "…" } ] }
+{
+  "items": [
+    { "url": "https://example.com/a.zip", "headers": { "Cookie": "…" } },
+    { "url": "https://example.com/b.zip", "startMode": "addonly" }
+  ]
+}
 ```
+
+At most **500** items per request, and the 256 KB body cap applies. Cookie
+headers are long, so clients should chunk by serialised size rather than by
+count.
 
 **Response `201`**
 
@@ -173,6 +192,11 @@ Same item shape, for "download all links on this page".
 
 Malformed entries are **skipped, not fatal** — one bad link in a page scrape
 must not discard the other nineteen. `rejected` reports how many were dropped.
+
+### `POST /api/v1/show` — authenticated
+
+Brings the Downpour window to the foreground. Returns `204` with no body.
+Exists so a client does not need a registered URL scheme just to focus the app.
 
 ### `POST /api/v1/downloads/text` — authenticated
 

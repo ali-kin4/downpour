@@ -32,7 +32,9 @@ impl Bucket {
         if self.rate == 0 {
             return;
         }
-        let elapsed = now.saturating_duration_since(self.last_refill).as_secs_f64();
+        let elapsed = now
+            .saturating_duration_since(self.last_refill)
+            .as_secs_f64();
         if elapsed > 0.0 {
             self.tokens = (self.tokens + elapsed * self.rate as f64).min(self.capacity);
             self.last_refill = now;
@@ -164,7 +166,10 @@ mod tests {
         assert_eq!(rl.try_take(huge), None, "first call uses the full burst");
         let wait = rl.try_take(huge).expect("second call waits");
         // Waits for one capacity's worth, not for 100 MiB worth.
-        assert!(wait <= Duration::from_secs_f64(MIN_CAPACITY / 1000.0 + 1.0), "{wait:?}");
+        assert!(
+            wait <= Duration::from_secs_f64(MIN_CAPACITY / 1000.0 + 1.0),
+            "{wait:?}"
+        );
     }
 
     #[test]
@@ -196,7 +201,10 @@ mod tests {
         let elapsed = start.elapsed();
         // One full second of allowance was consumed. Allow generous slack for
         // scheduler jitter but assert it was genuinely paced, not instant.
-        assert!(elapsed >= Duration::from_millis(600), "too fast: {elapsed:?}");
+        assert!(
+            elapsed >= Duration::from_millis(600),
+            "too fast: {elapsed:?}"
+        );
         assert!(elapsed < Duration::from_secs(4), "too slow: {elapsed:?}");
     }
 

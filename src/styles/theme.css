@@ -1,0 +1,266 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   Downpour design tokens
+
+   The rule this file exists to enforce: translucency belongs on *chrome*
+   (title bar, sidebar, overlays), never behind the download table. Windows 11
+   Mica renders the desktop wallpaper through the window, which is beautiful
+   behind a sidebar and actively hostile behind eight columns of dense text.
+   So `--surface-chrome` is translucent and `--surface-raised` is not.
+   ========================================================================== */
+
+@theme {
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system,
+    "Helvetica Neue", sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+
+  /* One accent, expressed as a gradient pair. Everything tinted in the app
+     interpolates between these two and nothing else. */
+  --color-accent-from: #6366f1;
+  --color-accent-to: #22d3ee;
+
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-panel: 16px;
+
+  /* Motion is reserved for state transitions. Nothing decorative moves. */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.36, 0.64, 1);
+}
+
+/* --- Light (the base; every token is defined here) ----------------------- */
+:root {
+  color-scheme: light;
+
+  --bg-window: rgb(243 244 246 / 0.72);
+  --surface-chrome: rgb(255 255 255 / 0.55);
+  --surface-raised: #ffffff;
+  --surface-sunken: #f3f4f6;
+  --surface-hover: rgb(99 102 241 / 0.06);
+  --surface-selected: rgb(99 102 241 / 0.11);
+
+  --border-subtle: rgb(0 0 0 / 0.07);
+  --border-strong: rgb(0 0 0 / 0.13);
+  --border-focus: #6366f1;
+
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-tertiary: #9ca3af;
+  --text-on-accent: #ffffff;
+
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-soft: rgb(99 102 241 / 0.12);
+
+  --status-running: #6366f1;
+  --status-complete: #059669;
+  --status-failed: #dc2626;
+  --status-paused: #d97706;
+  --status-scheduled: #7c3aed;
+  --status-idle: #6b7280;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04), 0 1px 3px rgb(0 0 0 / 0.06);
+  --shadow-overlay: 0 10px 38px rgb(0 0 0 / 0.18), 0 4px 12px rgb(0 0 0 / 0.10);
+}
+
+/* --- Dark ---------------------------------------------------------------
+   Duplicated across a media query and an explicit attribute so the in-app
+   theme switch wins in both directions, rather than only being able to force
+   dark on a light system. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --bg-window: rgb(17 18 24 / 0.72);
+    --surface-chrome: rgb(28 30 38 / 0.55);
+    --surface-raised: #1c1e26;
+    --surface-sunken: #14161c;
+    --surface-hover: rgb(129 140 248 / 0.08);
+    --surface-selected: rgb(129 140 248 / 0.16);
+
+    --border-subtle: rgb(255 255 255 / 0.07);
+    --border-strong: rgb(255 255 255 / 0.14);
+    --border-focus: #818cf8;
+
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --text-tertiary: #6b7280;
+
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-soft: rgb(129 140 248 / 0.16);
+
+    --status-running: #818cf8;
+    --status-complete: #34d399;
+    --status-failed: #f87171;
+    --status-paused: #fbbf24;
+    --status-scheduled: #a78bfa;
+    --status-idle: #9ca3af;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
+    --shadow-overlay: 0 10px 38px rgb(0 0 0 / 0.5), 0 4px 12px rgb(0 0 0 / 0.3);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg-window: rgb(17 18 24 / 0.72);
+  --surface-chrome: rgb(28 30 38 / 0.55);
+  --surface-raised: #1c1e26;
+  --surface-sunken: #14161c;
+  --surface-hover: rgb(129 140 248 / 0.08);
+  --surface-selected: rgb(129 140 248 / 0.16);
+
+  --border-subtle: rgb(255 255 255 / 0.07);
+  --border-strong: rgb(255 255 255 / 0.14);
+  --border-focus: #818cf8;
+
+  --text-primary: #f3f4f6;
+  --text-secondary: #9ca3af;
+  --text-tertiary: #6b7280;
+
+  --accent: #818cf8;
+  --accent-hover: #a5b4fc;
+  --accent-soft: rgb(129 140 248 / 0.16);
+
+  --status-running: #818cf8;
+  --status-complete: #34d399;
+  --status-failed: #f87171;
+  --status-paused: #fbbf24;
+  --status-scheduled: #a78bfa;
+  --status-idle: #9ca3af;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
+  --shadow-overlay: 0 10px 38px rgb(0 0 0 / 0.5), 0 4px 12px rgb(0 0 0 / 0.3);
+}
+
+/* --- Base ---------------------------------------------------------------- */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  /* Deliberately semi-transparent: this is what lets the Mica backdrop the
+     window was created with show through. An opaque body would render the
+     native material invisible. */
+  background: var(--bg-window);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* A desktop app is not a document: selecting label text on every drag makes
+   it feel like a web page. Inputs and explicitly-marked regions opt back in. */
+body {
+  user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+[data-selectable] {
+  user-select: text;
+}
+
+/* Keyboard users get a clear ring; mouse users never see it. */
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 8px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+  background-clip: content-box;
+  border: 3px solid transparent;
+}
+
+/* --- Reusable primitives -------------------------------------------------
+   Kept as classes rather than components where they are pure styling, so the
+   component tree stays about behaviour. */
+
+.dp-panel {
+  background: var(--surface-chrome);
+  backdrop-filter: blur(24px) saturate(150%);
+  border: 1px solid var(--border-subtle);
+}
+
+.dp-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.dp-accent-text {
+  background: linear-gradient(
+    100deg,
+    var(--color-accent-from),
+    var(--color-accent-to)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Respect the OS setting. A downloader is a utility; nobody should have to
+   watch it animate. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes dp-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+@keyframes dp-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.dp-enter {
+  animation: dp-fade-in 160ms var(--ease-out-expo);
+}
