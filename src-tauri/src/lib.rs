@@ -7,6 +7,7 @@
 
 mod clipboard;
 mod commands;
+mod logging;
 mod media;
 mod power;
 mod progress_window;
@@ -20,8 +21,6 @@ use std::sync::atomic::Ordering;
 use tauri::{Manager, WindowEvent};
 
 pub fn run() {
-    init_tracing();
-
     tauri::Builder::default()
         // Re-focus the existing window instead of starting a second copy: two
         // engines against one SQLite file would fight over the queue.
@@ -81,6 +80,9 @@ pub fn run() {
             commands::create_category_folders,
             commands::check_duplicate,
             commands::reset_settings,
+            commands::open_log_folder,
+            commands::read_log_tail,
+            commands::copy_diagnostics,
             commands::open_progress_window,
             commands::close_progress_window,
             commands::progress_window_open,
@@ -111,9 +113,21 @@ fn autostart_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri_plugin_opener::init()
 }
 
+/// Keeps the log writer's flush thread alive for as long as the app runs.
+struct LogGuard(#[allow(dead_code)] tracing_appender::non_blocking::WorkerGuard);
+
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let handle = app.handle().clone();
-    let db_path = state::data_dir(&handle).join("downpour.db");
+    let data_dir = state::data_dir(&handle);
+
+    // Held for the lifetime of the process: dropping it stops the background
+    // writer flushing, which loses exactly the lines before a crash.
+    if let Some(guard) = logging::init(&data_dir) {
+        app.manage(LogGuard(guard));
+    }
+    logging::log_startup_context(&app.package_info().version.to_string());
+
+    let db_path = data_dir.join("downpour.db");
     tracing::info!(path = %db_path.display(), "opening database");
 
     // The engine spawns its pump on construction, so it must be built inside
@@ -248,11 +262,4 @@ fn handle_window_event(window: &tauri::Window, event: &WindowEvent) {
         api.prevent_close();
         let _ = window.hide();
     }
-}
-
-fn init_tracing() {
-    use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_env("DOWNPOUR_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("downpour=info,downpour_core=info,warn"));
-    let _ = fmt().with_env_filter(filter).try_init();
 }

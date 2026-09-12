@@ -340,19 +340,74 @@ pub async fn install_yt_dlp(app: AppHandle) -> CmdResult<YtDlpStatus> {
     let part = dir.join(format!("{BINARY_NAME}.part"));
     let final_path = dir.join(BINARY_NAME);
 
-    let mut response = client
-        .get(&binary_url)
-        .send()
+    // Resume an interrupted install instead of restarting it.
+    //
+    // The binary is ~17 MB and the first attempt is often cut short by exactly
+    // the sort of connection that makes yt-dlp worth having. Re-spending those
+    // megabytes on a metered connection is not acceptable when the server will
+    // happily send only the tail. Resuming cannot install a bad binary: the
+    // SHA-256 below is computed over the whole assembled file, and a mismatch
+    // already deletes the part file, so the next attempt starts clean.
+    let mut resume_from = match tokio::fs::metadata(&part).await {
+        Ok(m) if m.is_file() => m.len(),
+        _ => 0,
+    };
+
+    let send = |from: u64| {
+        let mut request = client.get(&binary_url);
+        if from > 0 {
+            // Spelled as a string so this module needs no direct reqwest
+            // dependency; the client is built by the core crate.
+            request = request.header("Range", format!("bytes={from}-"));
+        }
+        request.send()
+    };
+
+    let mut response = send(resume_from)
         .await
-        .map_err(|e| format!("could not download {BINARY_NAME}: {e}"))?
+        .map_err(|e| format!("could not download {BINARY_NAME}: {e}"))?;
+
+    // A part file that is already the full length (or longer, from a truncated
+    // release) makes the server answer 416. That is not a failure, it just
+    // means the leftover is useless: drop it and fetch the whole thing.
+    if response.status().as_u16() == 416 {
+        let _ = tokio::fs::remove_file(&part).await;
+        resume_from = 0;
+        response = send(0)
+            .await
+            .map_err(|e| format!("could not download {BINARY_NAME}: {e}"))?;
+    }
+
+    let mut response = response
         .error_for_status()
         .map_err(|e| format!("could not download {BINARY_NAME}: {e}"))?;
-    let total = response.content_length();
+
+    // Only a real 206 proves the range was honoured. A 200 means the server
+    // ignored it and is sending the file from the start, so the part file has
+    // to be overwritten rather than appended to.
+    let resumed = resume_from > 0 && response.status().as_u16() == 206;
+    let already = if resumed { resume_from } else { 0 };
+    // `content_length` is what is still coming, so the bar needs the head back.
+    let total = response.content_length().map(|len| len + already);
+    if resumed {
+        tracing::info!(
+            resumed_from = already,
+            "resuming the yt-dlp download instead of restarting it"
+        );
+    }
 
     {
         use tokio::io::AsyncWriteExt;
-        let mut file = tokio::fs::File::create(&part).await.map_err(err)?;
-        let mut downloaded: u64 = 0;
+        let mut file = if resumed {
+            tokio::fs::OpenOptions::new()
+                .append(true)
+                .open(&part)
+                .await
+                .map_err(err)?
+        } else {
+            tokio::fs::File::create(&part).await.map_err(err)?
+        };
+        let mut downloaded: u64 = already;
         let mut last_tick = Instant::now();
         while let Some(chunk) = response
             .chunk()

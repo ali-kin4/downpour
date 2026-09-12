@@ -113,6 +113,16 @@ export const readTextFile = (path: string) => call<string>("read_text_file", { p
 export const quitApp = () => call<void>("quit_app");
 export const abortPowerAction = () => call<void>("abort_power_action");
 
+// -- Diagnostics ------------------------------------------------------------
+
+/** Opens the folder holding the rolling log files. */
+export const openLogFolder = () => call<void>("open_log_folder");
+/** The tail of the current log, for the in-app viewer. */
+export const readLogTail = (lines?: number) =>
+  call<string>("read_log_tail", { lines: lines ?? 200 });
+/** One block of text for a bug report. The pairing token is redacted. */
+export const copyDiagnostics = () => call<string>("copy_diagnostics");
+
 // -- Clipboard --------------------------------------------------------------
 
 export interface ClipboardCapture {

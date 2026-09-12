@@ -423,3 +423,23 @@ button:active:not(:disabled) {
   --status-running: #64748b;
   --border-focus: #64748b;
 }
+
+/* ==========================================================================
+   Idle behaviour
+
+   Downpour sits in the tray for hours. A hidden window still runs its CSS
+   animations, and each animated element costs a compositor pass whether or not
+   anyone can see it. `data-idle` is set on the root whenever the document is
+   not visible, and stops all of it.
+
+   This matters most in exactly the situation where it is least visible: the
+   window minimised behind a game, with an indeterminate progress bar looping
+   forever against a GPU that has better things to do.
+   ========================================================================== */
+
+:root[data-idle] *,
+:root[data-idle] *::before,
+:root[data-idle] *::after {
+  animation-play-state: paused !important;
+  transition: none !important;
+}

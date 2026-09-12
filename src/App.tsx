@@ -58,10 +58,40 @@ export function App() {
     };
   }, [applyEvent]);
 
+  // Poll only while the window is actually on screen.
+  //
+  // Downpour lives in the tray for hours, and a hidden window still runs its
+  // timers, its CSS animations and a compositor pass for each one. That is
+  // wasted work at best, and at worst it is the app quietly holding GPU
+  // resources while the machine is busy with something that needs them. When
+  // hidden it does nothing at all; the engine keeps downloading regardless,
+  // since it does not live in the webview.
   useEffect(() => {
-    void refreshStats();
-    const timer = window.setInterval(() => void refreshStats(), STATS_INTERVAL_MS);
-    return () => window.clearInterval(timer);
+    let timer = 0;
+
+    const start = () => {
+      void refreshStats();
+      timer = window.setInterval(() => void refreshStats(), STATS_INTERVAL_MS);
+    };
+    const stop = () => {
+      window.clearInterval(timer);
+      timer = 0;
+    };
+
+    const onVisibility = () => {
+      const hidden = document.visibilityState !== "visible";
+      // Drives the CSS that suspends every animation while hidden.
+      document.documentElement.toggleAttribute("data-idle", hidden);
+      stop();
+      if (!hidden) start();
+    };
+
+    onVisibility();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [refreshStats]);
 
   useClipboardCapture();

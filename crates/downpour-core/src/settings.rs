@@ -135,7 +135,7 @@ pub enum OnQueueComplete {
     Exit,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
     pub download_dir: PathBuf,
@@ -194,6 +194,52 @@ pub struct Settings {
     pub progress_window: bool,
     /// Play the completion sound. Off by default; unsolicited noise is rude.
     pub sound_on_complete: bool,
+}
+
+/// Hand-written so the pairing token can never be logged.
+///
+/// `Settings` is exactly the sort of struct someone reaches for when adding a
+/// diagnostic `tracing::debug!(?settings)`, and the log file is exactly the
+/// sort of thing a user attaches to a bug report. A derived `Debug` would put
+/// the token in both. The rest of the struct prints normally, because the whole
+/// point of logging it is to see the configuration that produced a bug.
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("download_dir", &self.download_dir)
+            .field("max_concurrent_downloads", &self.max_concurrent_downloads)
+            .field(
+                "max_connections_per_download",
+                &self.max_connections_per_download,
+            )
+            .field("speed_limit_bps", &self.speed_limit_bps)
+            .field("scheduled_speed_limit_bps", &self.scheduled_speed_limit_bps)
+            .field("max_retries", &self.max_retries)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("sort_into_categories", &self.sort_into_categories)
+            .field("categories", &self.categories.len())
+            .field("conflict_policy", &self.conflict_policy)
+            .field("schedule", &self.schedule)
+            .field("schedule_new_downloads", &self.schedule_new_downloads)
+            .field("pause_outside_window", &self.pause_outside_window)
+            .field("on_queue_complete", &self.on_queue_complete)
+            .field("clipboard_watch", &self.clipboard_watch)
+            .field("clipboard_auto_add", &self.clipboard_auto_add)
+            .field("rpc_port", &self.rpc_port)
+            .field("rpc_enabled", &self.rpc_enabled)
+            .field("rpc_token", &"<redacted>")
+            .field("user_agent", &self.user_agent)
+            .field("theme", &self.theme)
+            .field("accent", &self.accent)
+            .field("start_minimized", &self.start_minimized)
+            .field("launch_at_login", &self.launch_at_login)
+            .field("close_to_tray", &self.close_to_tray)
+            .field("notify_on_complete", &self.notify_on_complete)
+            .field("notify_on_error", &self.notify_on_error)
+            .field("progress_window", &self.progress_window)
+            .field("sound_on_complete", &self.sound_on_complete)
+            .finish()
+    }
 }
 
 impl Default for Settings {
@@ -320,12 +366,20 @@ impl Settings {
     }
 }
 
-/// Best guess at the user's Downloads folder, with a subfolder so Downpour
-/// never mixes its files in with the browser's.
+/// The user's Downloads folder, used directly.
+///
+/// Not a `Downpour` subfolder inside it. An app that invents its own parent
+/// directory makes people hunt for their files in a place they did not choose,
+/// and "where did it go?" is the last question a download manager should
+/// provoke. The category folders sit directly in Downloads, so a video lands in
+/// `Downloads\Video` — one level, exactly where you would look.
 pub fn default_download_dir() -> PathBuf {
-    dirs_download()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("Downpour")
+    dirs_download().unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// The old default, kept only so a existing install can be migrated off it.
+pub fn legacy_download_dir() -> PathBuf {
+    default_download_dir().join("Downpour")
 }
 
 fn dirs_download() -> Option<PathBuf> {
@@ -368,6 +422,23 @@ pub fn generate_token() -> String {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_download_folder_is_downloads_itself() {
+        // Not Downloads\Downpour. The category folders provide the structure;
+        // an extra parent directory only hides files from the person who
+        // asked for them.
+        let s = Settings::default();
+        assert!(
+            !s.download_dir.ends_with("Downpour"),
+            "got {:?}",
+            s.download_dir
+        );
+        assert_eq!(
+            legacy_download_dir(),
+            default_download_dir().join("Downpour")
+        );
+    }
 
     #[test]
     fn defaults_are_sane() {
@@ -507,6 +578,23 @@ mod tests {
         assert_eq!(s.max_concurrent_downloads, 7);
         assert_eq!(s.max_connections_per_download, 8, "missing field defaulted");
         assert!(!s.categories.is_empty());
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_pairing_token() {
+        // The log file is the thing users attach to bug reports, so a derived
+        // Debug here would hand out the credential that lets anything on the
+        // machine queue downloads.
+        let s = Settings::default();
+        let printed = format!("{s:?}");
+        assert!(
+            !printed.contains(&s.rpc_token),
+            "the token leaked into Debug output"
+        );
+        assert!(printed.contains("<redacted>"));
+        // The rest must still be there, or logging it is pointless.
+        assert!(printed.contains("max_concurrent_downloads"));
+        assert!(printed.contains("download_dir"));
     }
 
     #[test]

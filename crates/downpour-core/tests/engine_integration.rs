@@ -1292,3 +1292,122 @@ async fn a_large_download_really_uses_several_connections() {
         server.state.ranged_count()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Migration off the old Downloads\Downpour layout
+// ---------------------------------------------------------------------------
+//
+// This code deletes directories, so the cases where it must NOT act matter more
+// than the case where it must.
+
+#[tokio::test]
+async fn an_empty_legacy_folder_is_migrated_and_cleaned_up() {
+    let dir = TempDir::new();
+    let legacy = dir.join("Downpour");
+    std::fs::create_dir_all(&legacy).unwrap();
+    for name in [
+        "Video",
+        "Music",
+        "Pictures",
+        "Documents",
+        "Compressed",
+        "Programs",
+    ] {
+        std::fs::create_dir_all(legacy.join(name)).unwrap();
+    }
+
+    let store = Store::open(&dir.join("downpour.db")).unwrap();
+    let mut settings = Settings::default();
+    settings.download_dir = legacy.clone();
+    store.save_settings(&settings).unwrap();
+    let engine = Engine::with_store(store).unwrap();
+
+    assert!(engine.migrate_legacy_download_dir(&legacy).unwrap());
+    engine.run_first_run_setup().unwrap();
+
+    assert_eq!(
+        engine.settings().download_dir,
+        dir.0,
+        "the download folder should move up out of the Downpour subfolder"
+    );
+    assert!(!legacy.exists(), "the empty scaffolding should be removed");
+    assert!(
+        dir.join("Video").is_dir(),
+        "categories recreated under the new root"
+    );
+}
+
+#[tokio::test]
+async fn a_legacy_folder_holding_files_is_left_completely_alone() {
+    // Silently moving where someone's downloads go is far worse than an extra
+    // folder level, so a single real file vetoes the whole migration.
+    let dir = TempDir::new();
+    let legacy = dir.join("Downpour");
+    std::fs::create_dir_all(legacy.join("Compressed")).unwrap();
+    std::fs::write(legacy.join("Compressed").join("mine.zip"), b"important").unwrap();
+
+    let store = Store::open(&dir.join("downpour.db")).unwrap();
+    let mut settings = Settings::default();
+    settings.download_dir = legacy.clone();
+    store.save_settings(&settings).unwrap();
+    let engine = Engine::with_store(store).unwrap();
+
+    engine.run_first_run_setup().unwrap();
+
+    assert_eq!(
+        engine.settings().download_dir,
+        legacy,
+        "a folder with files in it must keep being the download folder"
+    );
+    assert_eq!(
+        std::fs::read(legacy.join("Compressed").join("mine.zip")).unwrap(),
+        b"important"
+    );
+}
+
+#[tokio::test]
+async fn a_folder_the_user_chose_is_never_migrated() {
+    // Only the exact old default is migrated. Someone who deliberately picked a
+    // path called "Downpour" elsewhere keeps it.
+    let dir = TempDir::new();
+    let chosen = dir.join("MyStuff");
+    std::fs::create_dir_all(&chosen).unwrap();
+
+    let store = Store::open(&dir.join("downpour.db")).unwrap();
+    let mut settings = Settings::default();
+    settings.download_dir = chosen.clone();
+    store.save_settings(&settings).unwrap();
+    let engine = Engine::with_store(store).unwrap();
+
+    assert!(!engine
+        .migrate_legacy_download_dir(&dir.join("Downpour"))
+        .unwrap());
+    assert_eq!(engine.settings().download_dir, chosen);
+}
+
+#[tokio::test]
+async fn migration_runs_at_most_once() {
+    let dir = TempDir::new();
+    let legacy = dir.join("Downpour");
+    std::fs::create_dir_all(&legacy).unwrap();
+
+    let db = dir.join("downpour.db");
+    let store = Store::open(&db).unwrap();
+    let mut settings = Settings::default();
+    settings.download_dir = legacy.clone();
+    store.save_settings(&settings).unwrap();
+    let engine = Engine::with_store(store).unwrap();
+    assert!(engine.migrate_legacy_download_dir(&legacy).unwrap());
+    assert_eq!(engine.settings().download_dir, dir.0);
+
+    // A user who then deliberately picks the old path back must keep it.
+    let mut back = engine.settings();
+    back.download_dir = legacy.clone();
+    engine.update_settings(back).unwrap();
+    assert!(!engine.migrate_legacy_download_dir(&legacy).unwrap());
+    assert_eq!(
+        engine.settings().download_dir,
+        legacy,
+        "the migration must not fire a second time"
+    );
+}

@@ -584,3 +584,64 @@ pub fn reset_settings(state: State<'_, AppState>) -> CmdResult<Settings> {
     };
     state.engine.update_settings(next).map_err(err)
 }
+
+// ---------------------------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------------------------
+
+/// Opens the folder holding the log files.
+#[tauri::command]
+pub fn open_log_folder(app: AppHandle) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = crate::logging::log_dir(&crate::state::data_dir(&app));
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(err)
+}
+
+/// The last `lines` of the current log, for the in-app diagnostics view.
+#[tauri::command]
+pub fn read_log_tail(app: AppHandle, lines: Option<usize>) -> String {
+    crate::logging::tail(&crate::state::data_dir(&app), lines.unwrap_or(200))
+}
+
+/// One block of text to paste into a bug report.
+///
+/// Assembled here rather than in the UI so there is a single place responsible
+/// for what a user is about to publish. The settings dump goes through
+/// `Settings`'s hand-written `Debug`, which redacts the pairing token.
+#[tauri::command]
+pub fn copy_diagnostics(app: AppHandle, state: State<'_, AppState>) -> String {
+    let settings = state.engine.settings();
+    let stats = state.engine.stats();
+    let bound = state.rpc_port.load(std::sync::atomic::Ordering::Relaxed);
+
+    format!(
+        "Downpour {version}\n\
+         OS: {os} {arch}\n\
+         Loopback: {rpc}\n\
+         \n\
+         Queue: {total} total, {running} running, {queued} queued, \
+         {failed} failed, {completed} completed\n\
+         \n\
+         Settings:\n{settings:#?}\n\
+         \n\
+         Recent log:\n{log}\n",
+        version = app.package_info().version,
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        rpc = if bound > 0 {
+            format!("listening on 127.0.0.1:{bound}")
+        } else {
+            "not listening".to_string()
+        },
+        total = stats.total,
+        running = stats.running,
+        queued = stats.queued,
+        failed = stats.failed,
+        completed = stats.completed,
+        settings = settings,
+        log = crate::logging::tail(&crate::state::data_dir(&app), 120),
+    )
+}

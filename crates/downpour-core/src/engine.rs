@@ -1156,6 +1156,63 @@ impl Engine {
 }
 
 impl Engine {
+    /// Moves an existing install off the old `Downloads\Downpour` default.
+    ///
+    /// Only when it is safe to do without surprising anyone: the setting must
+    /// still be exactly the old default, and the folder must contain no actual
+    /// files. If the user has downloads sitting in there, or picked that path
+    /// themselves, it is left alone — silently changing where someone's files
+    /// go is far worse than an extra folder level.
+    ///
+    /// The empty category folders the old default created are removed too, so
+    /// the migration does not leave six abandoned directories behind.
+    /// Takes the legacy path as an argument rather than reading it from the
+    /// environment, so the behaviour that deletes directories can actually be
+    /// tested against a temporary one.
+    pub fn migrate_legacy_download_dir(&self, legacy: &std::path::Path) -> Result<bool> {
+        const FLAG: &str = "legacy_dir_migrated";
+        if self.inner.store.flag(FLAG)? {
+            return Ok(false);
+        }
+
+        let settings = self.inner.settings.read().clone();
+        if settings.download_dir != legacy {
+            // Never the old default, or already moved. Record it so this check
+            // does not run again.
+            self.inner.store.set_flag(FLAG, true)?;
+            return Ok(false);
+        }
+
+        if directory_holds_files(legacy) {
+            tracing::info!(
+                path = %legacy.display(),
+                "leaving the old download folder alone; it still holds files"
+            );
+            self.inner.store.set_flag(FLAG, true)?;
+            return Ok(false);
+        }
+
+        let parent = legacy
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(crate::settings::default_download_dir);
+        let mut next = settings.clone();
+        next.download_dir = parent;
+        self.update_settings(next)?;
+
+        // Tidy up the empty scaffolding the old layout created.
+        for folder in settings.category_folders() {
+            let _ = std::fs::remove_dir(&folder);
+        }
+        let _ = std::fs::remove_dir(legacy);
+
+        // The category folders must be recreated under the new root.
+        self.inner.store.set_flag("first_run_done", false)?;
+        self.inner.store.set_flag(FLAG, true)?;
+        tracing::info!("moved the download folder out of the old Downpour subfolder");
+        Ok(true)
+    }
+
     /// One-time setup performed on the very first launch.
     ///
     /// Creates the category folders under the download directory, the way IDM
@@ -1176,6 +1233,7 @@ impl Engine {
     /// what it created rather than doing it silently.
     pub fn run_first_run_setup(&self) -> Result<Vec<PathBuf>> {
         const FLAG: &str = "first_run_done";
+        self.migrate_legacy_download_dir(&crate::settings::legacy_download_dir())?;
         if self.inner.store.flag(FLAG)? {
             return Ok(Vec::new());
         }
@@ -1214,4 +1272,27 @@ impl Engine {
         tracing::info!(created = created.len(), "first-run folder setup complete");
         Ok(created)
     }
+}
+
+/// Whether a directory tree contains any actual file, ignoring empty folders.
+///
+/// Used to decide whether the old `Downloads\Downpour` layout can be cleaned up
+/// silently. Anything unreadable counts as occupied: the safe assumption when
+/// deciding whether to delete someone's folder is that it matters.
+fn directory_holds_files(dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        match entry.file_type() {
+            Ok(t) if t.is_dir() => {
+                if directory_holds_files(&entry.path()) {
+                    return true;
+                }
+            }
+            Ok(_) => return true,
+            Err(_) => return true,
+        }
+    }
+    false
 }

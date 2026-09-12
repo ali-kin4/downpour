@@ -251,6 +251,11 @@ export const SETTINGS_INDEX = [
     keywords: "retry attempts give up failure resume",
   },
   {
+    id: "advanced.diagnostics.log",
+    label: "Application log",
+    keywords: "log logs diagnostics debug crash error report troubleshoot bug",
+  },
+  {
     id: "advanced.limits.ceiling",
     label: "Why connections stop at 16",
     keywords: "maximum ceiling 32 more connections faster rate limit throttle",
@@ -283,6 +288,7 @@ export const GROUPS = {
   "system.windows": "Windows",
   "advanced.network": "Network",
   "advanced.limits": "Limits",
+  "advanced.diagnostics": "Diagnostics",
 } as const satisfies Record<GroupId, string>;
 
 const TAB_LABEL = new Map<string, string>(
