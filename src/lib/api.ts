@@ -18,6 +18,7 @@ import type {
   RpcInfo,
   Settings,
   StartMode,
+  UpdateCheck,
 } from "./types";
 
 /** The single channel the shell forwards engine events on. */
@@ -112,6 +113,14 @@ export const readTextFile = (path: string) => call<string>("read_text_file", { p
 /** Pauses everything, flushes resume state, then exits. */
 export const quitApp = () => call<void>("quit_app");
 export const abortPowerAction = () => call<void>("abort_power_action");
+
+// -- Updates ----------------------------------------------------------------
+
+/**
+ * Asks GitHub for the newest release. Only ever called from the About dialog:
+ * nothing in the app checks on a timer or at launch.
+ */
+export const checkForUpdates = () => call<UpdateCheck>("check_for_updates");
 
 // -- Diagnostics ------------------------------------------------------------
 

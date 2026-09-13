@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { AboutDialog } from "./components/AboutDialog";
 import { AddDialog } from "./components/AddDialog";
 import { CommandPalette } from "./components/CommandPalette";
 import { CompletionDialog } from "./components/CompletionDialog";
@@ -13,6 +14,7 @@ import { Toasts } from "./components/Toasts";
 import { Toolbar } from "./components/Toolbar";
 import { useTheme } from "./hooks/useTheme";
 import * as api from "./lib/api";
+import { notesFor } from "./lib/release-notes";
 import { hostOf } from "./lib/format";
 import { useApp } from "./store/app";
 
@@ -38,6 +40,34 @@ export function App() {
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  // What's new, once per version.
+  //
+  // Only for an *upgrade*: with no remembered version this is a fresh install,
+  // and a release-notes window is not how anyone wants to be greeted by an app
+  // they just installed. Stored locally, so this costs nothing and asks nobody.
+  useEffect(() => {
+    const KEY = "downpour.lastSeenVersion";
+    void api
+      .appVersion()
+      .then((version) => {
+        let seen: string | null = null;
+        try {
+          seen = window.localStorage.getItem(KEY);
+          window.localStorage.setItem(KEY, version);
+        } catch {
+          // Private window, or storage blocked. Skipping the notes is the only
+          // sensible failure: showing them on every launch is worse than never.
+          return;
+        }
+        if (seen && seen !== version && notesFor(version)) {
+          useApp.getState().setAboutOpen(true);
+        }
+      })
+      .catch(() => {
+        /* Not in Tauri, or the shell is not up yet. Nothing to announce. */
+      });
+  }, []);
 
   useEffect(() => {
     // The listener is registered asynchronously, so a fast unmount (React 19
@@ -132,6 +162,7 @@ export function App() {
         </main>
       </div>
 
+      <AboutDialog />
       <AddDialog />
       <PasteDialog />
       <SettingsDialog />

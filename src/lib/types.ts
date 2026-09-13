@@ -234,6 +234,22 @@ export function matchesFilter(
   }
 }
 
+/**
+ * The result of a manual update check.
+ *
+ * `latest` is absent when the repository has no published release yet, which is
+ * not a failure. A failed check never reaches here at all -- it rejects, so
+ * "could not find out" can never be shown as "up to date".
+ */
+export interface UpdateCheck {
+  current: string;
+  latest: string | null;
+  updateAvailable: boolean;
+  /** The release page to open, or the releases index when there is no release. */
+  url: string;
+  name: string | null;
+}
+
 export function isTerminal(status: DownloadStatus): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
 }

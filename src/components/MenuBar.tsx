@@ -10,6 +10,7 @@
 import clsx from "clsx";
 import {
   ArrowDownToLine,
+  ArrowUpCircle,
   Ban,
   BookOpen,
   Brush,
@@ -207,16 +208,14 @@ export function MenuBar() {
       },
       sep,
       {
+        label: "Check for updates…",
+        icon: <ArrowUpCircle size={14} />,
+        run: () => s().openAboutForUpdates(),
+      },
+      {
         label: "About Downpour",
         icon: <Info size={14} />,
-        run: async () => {
-          const version = await api.appVersion().catch(() => "unknown");
-          s().toast({
-            tone: "info",
-            title: `Downpour ${version}`,
-            detail: "A fast, modern download manager.",
-          });
-        },
+        run: () => s().setAboutOpen(true),
       },
     ],
   };

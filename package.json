@@ -1,7 +1,7 @@
 {
   "name": "downpour",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "A fast, modern download manager for Windows.",
   "license": "MIT",
   "type": "module",

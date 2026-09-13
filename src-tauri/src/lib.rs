@@ -14,6 +14,7 @@ mod progress_window;
 mod rpc;
 mod state;
 mod tray;
+mod update;
 
 use downpour_core::{Engine, EngineConfig, EngineEvent};
 use state::AppState;
@@ -93,6 +94,7 @@ pub fn run() {
             media::install_yt_dlp,
             media::probe_media,
             media::resolve_media,
+            update::check_for_updates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Downpour");

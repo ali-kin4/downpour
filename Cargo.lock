@@ -1151,11 +1151,13 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "downpour"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "axum",
  "downpour-core",
+ "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "tauri",
@@ -1178,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "downpour-cli"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1190,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "downpour-core"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "axum",

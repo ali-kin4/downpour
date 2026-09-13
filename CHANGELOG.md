@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-13
+
+### Added
+
+- **An About window that answers the three things it is opened for**: which
+  version is running, what changed in it, and whether there is a newer one.
+  Reachable from Help, and shown once on the first launch after an upgrade --
+  only an upgrade, because release notes are not how anyone wants to be greeted
+  by an app they have just installed.
+- **A manual check for updates**, against the GitHub releases API. Manual is the
+  design, not a shortcut: nothing polls at launch or on a timer, because an
+  unprompted request every time the app opens is exactly what someone on a
+  metered connection does not want. The check distinguishes "this is the newest
+  release" from "I could not find out" -- a rate-limited request reported as up
+  to date is how people miss releases for months -- and compares versions
+  numerically, so a `v` on a tag is not mistaken for a new release forever.
+- **Plain-language release notes** in `src/lib/release-notes.ts`, shown in the
+  About window. This file is what changed *for the user*; `CHANGELOG.md` stays
+  the technical record. It holds the current release and a couple behind it
+  rather than mirroring this file, because two documents that must be edited
+  together will drift, and a short one is the one that actually gets updated.
+
 ### Fixed
 
 - **Pause All did not stop a pinned download.** A download gated by the
@@ -343,7 +365,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.0
 [1.0.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.0.1
 [1.0.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.0.0
 [0.1.0]: https://github.com/ali-kin4/downpour/releases/tag/v0.1.0

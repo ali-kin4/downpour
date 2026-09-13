@@ -225,7 +225,17 @@ const handlers: Record<string, Handler> = {
   progress_window_open: () => false,
   preview_links: ({ text }) =>
     String(text ?? "").match(/https?:\/\/\S+/g) ?? [],
-  app_version: () => "0.1.0-dev",
+  app_version: () => "1.1.0",
+  // The fixture is always up to date. Reviewing the "update available" state
+  // means editing this line, which is the right amount of friction for a state
+  // the real check reaches only when GitHub says so.
+  check_for_updates: () => ({
+    current: "1.1.0",
+    latest: "1.1.0",
+    updateAvailable: false,
+    url: "https://github.com/ali-kin4/downpour/releases",
+    name: null,
+  }),
   // `listen()` goes through the same invoke bridge. Returning a handler id
   // keeps its matching `unlisten` from dereferencing undefined and throwing
   // during StrictMode's double-mount.
