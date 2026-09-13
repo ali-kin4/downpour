@@ -13,6 +13,16 @@
  * The what's-new list comes from `release-notes.ts` — the plain-language notes,
  * not `CHANGELOG.md`. Someone opening this window wants to know that Pause All
  * holds now, not which lock ordering changed.
+ *
+ * On the look of it: the accent gradient belongs to the product mark and to
+ * nothing else in here. Running it through the author's name would conflate the
+ * person with the product and read as self-branding, which is the opposite of
+ * the impression this window exists to make. The credit carries its weight
+ * through type, space and a steady hairline instead.
+ *
+ * The legal block is not boilerplate padding. Downpour's code is MIT and its
+ * name is not, and someone deciding whether to trust a build should be able to
+ * read that distinction here rather than infer it.
  */
 
 import {
@@ -21,14 +31,13 @@ import {
   ChevronDown,
   ExternalLink,
   GitBranch,
-  Globe,
   RefreshCw,
-  Scale,
   TriangleAlert,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../lib/api";
+import { ACKNOWLEDGEMENTS } from "../lib/acknowledgements";
 import { RELEASES, notesFor } from "../lib/release-notes";
 import type { UpdateCheck } from "../lib/types";
 import { useApp } from "../store/app";
@@ -38,6 +47,10 @@ import { DropletMark } from "./MenuBar";
 const REPO_URL = "https://github.com/ali-kin4/downpour";
 const AUTHOR = "Ali Jabbary";
 const AUTHOR_SITE = "alijabbary.com";
+/** The year in the notices. A constant, not `new Date()`: a copyright year that
+ *  changes because the machine's clock rolled over is not a claim about
+ *  anything. */
+const COPYRIGHT_YEAR = "2026";
 
 /** Where the update check has got to. */
 type CheckState =
@@ -56,6 +69,7 @@ export function AboutDialog() {
   const [check, setCheck] = useState<CheckState>({ phase: "idle" });
   /** Which older release's notes are expanded, if any. */
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [creditsOpen, setCreditsOpen] = useState(false);
 
   const runCheck = useCallback(async () => {
     setCheck({ phase: "checking" });
@@ -72,6 +86,7 @@ export function AboutDialog() {
     // "is there an update" now.
     setCheck({ phase: "idle" });
     setExpanded(null);
+    setCreditsOpen(false);
     api
       .appVersion()
       .then(setVersion)
@@ -94,24 +109,19 @@ export function AboutDialog() {
       open={open}
       onClose={() => setOpen(false)}
       title="About Downpour"
-      width={600}
+      width={620}
       footer={
         <div className="flex w-full items-center justify-between gap-3">
           <div className="flex items-center gap-1">
-            <LinkButton
+            <QuietLink
               icon={<GitBranch size={13} />}
               label="Source"
               onClick={() => void openUrl(REPO_URL)}
             />
-            <LinkButton
+            <QuietLink
               icon={<ExternalLink size={13} />}
               label="Report an issue"
               onClick={() => void openUrl(`${REPO_URL}/issues/new/choose`)}
-            />
-            <LinkButton
-              icon={<Scale size={13} />}
-              label="MIT licence"
-              onClick={() => void openUrl(`${REPO_URL}/blob/main/LICENSE`)}
             />
           </div>
           <Button variant="primary" onClick={() => setOpen(false)}>
@@ -131,7 +141,7 @@ export function AboutDialog() {
 
         <div className="min-w-0 flex-1 pt-0.5">
           <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-            <h2 className="text-[19px] leading-none font-semibold tracking-tight text-[var(--text-primary)]">
+            <h2 className="text-[20px] leading-none font-semibold tracking-[-0.015em] text-[var(--text-primary)]">
               Downpour
             </h2>
             <span className="rounded-full border border-[var(--border-subtle)] px-2 py-0.5 text-[11px] font-medium text-[var(--text-secondary)] tabular-nums">
@@ -145,28 +155,27 @@ export function AboutDialog() {
       </div>
 
       {/* -- Credit -------------------------------------------------------- */}
-      <div className="mt-5 overflow-hidden rounded-[12px] border border-[var(--border-subtle)]">
-        <div className="bg-linear-100 from-[var(--color-accent-from)]/[0.07] to-[var(--color-accent-to)]/[0.07] px-4 py-3.5">
-          <p className="text-[10.5px] font-semibold tracking-[0.09em] text-[var(--text-tertiary)] uppercase">
-            Designed and built by
+      <div className="mt-6 border-y border-[var(--border-subtle)] py-4">
+        <p className="text-[10px] font-semibold tracking-[0.11em] text-[var(--text-tertiary)] uppercase">
+          Designed and built by
+        </p>
+        <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <p className="text-[16.5px] leading-none font-semibold tracking-[-0.01em] text-[var(--text-primary)]">
+            {AUTHOR}
           </p>
-          <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <p className="bg-linear-100 from-[var(--color-accent-from)] to-[var(--color-accent-to)] bg-clip-text text-[17px] leading-tight font-semibold tracking-tight text-transparent">
-              {AUTHOR}
-            </p>
-            <button
-              type="button"
-              onClick={() => void openUrl(`https://${AUTHOR_SITE}`)}
-              className="group inline-flex items-center gap-1.5 rounded-[var(--radius-control)] border border-[var(--border-strong)] bg-[var(--surface-raised)] px-2.5 py-1 text-[12px] font-medium text-[var(--text-primary)] transition-colors duration-150 hover:bg-[var(--surface-hover)]"
-            >
-              <Globe size={13} className="text-[var(--text-tertiary)]" />
+          <button
+            type="button"
+            onClick={() => void openUrl(`https://${AUTHOR_SITE}`)}
+            className="group inline-flex items-baseline gap-1 text-[12.5px] text-[var(--text-secondary)] transition-colors duration-150 hover:text-[var(--text-primary)]"
+          >
+            <span className="border-b border-transparent group-hover:border-[var(--border-strong)]">
               {AUTHOR_SITE}
-              <ArrowUpRight
-                size={12}
-                className="text-[var(--text-tertiary)] transition-transform duration-150 group-hover:-translate-y-px group-hover:translate-x-px"
-              />
-            </button>
-          </div>
+            </span>
+            <ArrowUpRight
+              size={11}
+              className="shrink-0 self-center text-[var(--text-tertiary)] transition-transform duration-150 group-hover:-translate-y-px group-hover:translate-x-px"
+            />
+          </button>
         </div>
       </div>
 
@@ -252,17 +261,10 @@ export function AboutDialog() {
                 const isOpen = expanded === r.version;
                 return (
                   <div key={r.version}>
-                    <button
-                      type="button"
-                      onClick={() => setExpanded(isOpen ? null : r.version)}
-                      aria-expanded={isOpen}
-                      className="flex w-full items-center gap-1.5 rounded-[6px] py-1.5 text-[12px] text-[var(--text-secondary)] transition-colors duration-150 hover:text-[var(--text-primary)]"
+                    <Disclosure
+                      open={isOpen}
+                      onToggle={() => setExpanded(isOpen ? null : r.version)}
                     >
-                      <ChevronDown
-                        size={13}
-                        className={`shrink-0 transition-transform duration-150 ${isOpen ? "" : "-rotate-90"}`}
-                        aria-hidden
-                      />
                       <span className="font-medium tabular-nums">
                         {r.version}
                       </span>
@@ -271,7 +273,7 @@ export function AboutDialog() {
                           · {r.date}
                         </span>
                       )}
-                    </button>
+                    </Disclosure>
                     {isOpen && (
                       <ul className="mb-1 ml-[19px] space-y-1.5 border-l border-[var(--border-subtle)] pl-3">
                         {r.notes.map((n) => (
@@ -293,6 +295,78 @@ export function AboutDialog() {
           )}
         </section>
       )}
+
+      {/* -- Legal --------------------------------------------------------- */}
+      <section className="mt-6 border-t border-[var(--border-subtle)] pt-4">
+        <div className="space-y-1 text-[11px] leading-relaxed text-[var(--text-tertiary)]">
+          <p>
+            © {COPYRIGHT_YEAR} {AUTHOR}. Downpour's source code is released under
+            the MIT Licence.
+          </p>
+          {/* Deliberately "trademarks", never "registered trademarks", and no ®
+              anywhere: the marks are unregistered, and claiming otherwise would
+              be a false statement of fact. */}
+          <p>
+            Downpour™, the Downpour name and the Downpour droplet logo are
+            trademarks of {AUTHOR}. The MIT Licence covers the code, not the name
+            — a fork is welcome, under its own.
+          </p>
+        </div>
+
+        <div className="mt-2.5 flex flex-wrap items-center gap-1">
+          <QuietLink
+            label="MIT Licence"
+            onClick={() => void openUrl(`${REPO_URL}/blob/main/LICENSE`)}
+          />
+          <QuietLink
+            label="Trademark policy"
+            onClick={() => void openUrl(`${REPO_URL}/blob/main/TRADEMARK.md`)}
+          />
+        </div>
+
+        {/* -- Acknowledgements -------------------------------------------- */}
+        <div className="mt-3">
+          <Disclosure
+            open={creditsOpen}
+            onToggle={() => setCreditsOpen(!creditsOpen)}
+          >
+            <span className="font-medium">Open-source components</span>
+            <span className="text-[var(--text-tertiary)]">
+              · {ACKNOWLEDGEMENTS.length}
+            </span>
+          </Disclosure>
+
+          {creditsOpen && (
+            <ul className="mt-1 ml-[19px] divide-y divide-[var(--border-subtle)] border-l border-[var(--border-subtle)] pl-3">
+              {ACKNOWLEDGEMENTS.map((a) => (
+                <li
+                  key={a.name}
+                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5"
+                >
+                  <button
+                    type="button"
+                    onClick={() => void openUrl(a.url)}
+                    className="text-[12px] font-medium text-[var(--text-primary)] transition-colors duration-150 hover:text-[var(--color-accent-from)]"
+                  >
+                    {a.name}
+                  </button>
+                  <span className="text-[11px] text-[var(--text-tertiary)]">
+                    {a.license}
+                  </span>
+                  {a.bundled === false && (
+                    <span className="rounded-full border border-[var(--border-subtle)] px-1.5 text-[10px] text-[var(--text-tertiary)]">
+                      not bundled
+                    </span>
+                  )}
+                  <p className="w-full text-[11px] leading-snug text-[var(--text-tertiary)]">
+                    {a.role}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
     </Dialog>
   );
 }
@@ -344,13 +418,41 @@ function CheckStatus({ state }: { state: CheckState }) {
   );
 }
 
-/** A quiet footer link. Text, not a button that looks like a command. */
-function LinkButton({
+/** A chevron row that expands something. Shared so the two lists in here open
+ *  and close identically. */
+function Disclosure({
+  open,
+  onToggle,
+  children,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className="flex w-full items-center gap-1.5 rounded-[6px] py-1.5 text-[12px] text-[var(--text-secondary)] transition-colors duration-150 hover:text-[var(--text-primary)]"
+    >
+      <ChevronDown
+        size={13}
+        className={`shrink-0 transition-transform duration-150 ${open ? "" : "-rotate-90"}`}
+        aria-hidden
+      />
+      {children}
+    </button>
+  );
+}
+
+/** A quiet link. Text, not a button that looks like a command. */
+function QuietLink({
   icon,
   label,
   onClick,
 }: {
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   label: string;
   onClick: () => void;
 }) {

@@ -57,6 +57,11 @@ export const RELEASES: Release[] = [
           "Sleep was forced on the machine immediately. It is now requested normally, after the same 60-second countdown as shutdown, and one Cancel calls off any of the three.",
       },
       {
+        title: "Credits, licences and trademark, properly stated",
+        detail:
+          "About now says who made Downpour, what it is built on, and that while the code is open, the name and logo are not free to take.",
+      },
+      {
         title: "An About window, with a check for updates",
         detail:
           "See the version you are running, what changed in it, and check for a newer one when you feel like it. Downpour never checks on its own.",

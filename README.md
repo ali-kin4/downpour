@@ -518,7 +518,18 @@ is explicitly out of scope: [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-[MIT](LICENSE) © ali-kin4
+[MIT](LICENSE) © 2026 Ali Jabbary — use it, change it, ship it, sell it.
+
+### Trademark
+
+The code is open; the name and the logo are not. **Downpour™, the Downpour name
+and the Downpour droplet logo are trademarks of Ali Jabbary.** The MIT Licence
+covers copyright and grants no rights to either — the same arrangement Firefox
+and Chromium use, and it exists so that a build calling itself Downpour is
+Downpour.
+
+Fork it freely and release under your own name. See [TRADEMARK.md](TRADEMARK.md)
+for what needs no permission (almost everything) and what does.
 
 Downpour downloads what you point it at. What you are allowed to download is
 between you, the site's terms, and the law where you live.

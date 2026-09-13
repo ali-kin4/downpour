@@ -43,7 +43,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "copyright": "Copyright (c) 2026 ali-kin4",
+    "copyright": "Copyright (c) 2026 Ali Jabbary",
     "shortDescription": "A fast, modern download manager.",
     "longDescription": "Downpour is a fast, modern download manager: segmented transfers, reliable resume, batch capture and overnight scheduling.",
     "windows": {
@@ -70,7 +70,7 @@
     },
     "createUpdaterArtifacts": false,
     "category": "Utility",
-    "publisher": "ali-kin4",
+    "publisher": "Ali Jabbary",
     "homepage": "https://github.com/ali-kin4/downpour"
   }
 }

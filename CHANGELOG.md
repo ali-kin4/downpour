@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release" from "I could not find out" -- a rate-limited request reported as up
   to date is how people miss releases for months -- and compares versions
   numerically, so a `v` on a tag is not mistaken for a new release forever.
+- **Proper attribution and legal footing.** The copyright holder is now Ali
+  Jabbary by name rather than a GitHub handle, across `LICENSE`, the crate
+  manifest and the installer metadata. The About window carries the notices a
+  person needs to judge a build: who holds copyright, that the source is MIT,
+  and that the name and logo are not covered by it.
+- **`TRADEMARK.md`**, reserving the Downpour name and droplet logo while leaving
+  the code MIT -- the Firefox and Chromium arrangement. A fork is welcome under
+  its own name; a modified build calling itself Downpour is not, because a
+  broken or malicious one carrying this name damages everyone who trusts it. The
+  marks are unregistered and asserted under common law, so the notices say
+  "trademarks" and never "registered".
+- **Open-source acknowledgements** in the About window: the principal components
+  Downpour is built on, each with the licence read from the package as installed
+  rather than from memory, and yt-dlp marked "not bundled" because Downpour
+  fetches it from its own releases on request rather than shipping it.
 - **Plain-language release notes** in `src/lib/release-notes.ts`, shown in the
   About window. This file is what changed *for the user*; `CHANGELOG.md` stays
   the technical record. It holds the current release and a couple behind it
