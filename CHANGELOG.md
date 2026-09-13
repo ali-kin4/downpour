@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Sleep when finished" could put the machine to sleep seconds after a
+  download was started.** Three bugs stacked up. The drain report counted every
+  `Completed` row in the list rather than the run that had just ended, so a
+  queue whose only download failed immediately still reported the downloads
+  that had finished earlier in the session, and the shell acted on it; a paused
+  download counted as no work outstanding, so pausing the last active item read
+  as the queue finishing; and the action was never disarmed, so a choice made
+  once for one overnight queue fired again on every later drain, indefinitely.
+  Together these turned a broken link into "the PC dies the moment I hit
+  download". The post-queue action now only runs when something actually
+  completed in that run, pausing is not a drain, and firing resets the setting
+  to "Do nothing".
+- **Sleep is no longer forced, and no longer instant.** It was dispatched as
+  `SetSuspendState(..., bForce = TRUE, ...)`, which skips the window in which
+  drivers and applications acknowledge the transition; a machine that cannot
+  service a suspend that way does not sleep, it drops. It now requests a normal
+  suspend and, like shutdown and hibernate, does so after a 60-second countdown
+  that "Cancel power action" calls off.
+- **Cancelling a power countdown no longer leaks into the next one.** The
+  pending-hibernate flag was never cleared on the path that did not fire, so a
+  cancellation could silently swallow an action armed later. Countdowns are
+  now generation-stamped, and one Cancel covers sleep, hibernate and shutdown.
+
 ## [1.0.1] - 2026-09-11
 
 Everything here landed hours after the 1.0.0 tag was cut, so 1.0.0's published

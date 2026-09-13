@@ -212,7 +212,21 @@ fn spawn_power_watcher(app: tauri::AppHandle, engine: &Engine) {
     tauri::async_runtime::spawn(async move {
         while let Ok(event) = rx.recv().await {
             if let EngineEvent::QueueDrained { completed, .. } = event {
-                let action = engine.settings().on_queue_complete;
+                let settings = engine.settings();
+                let action = settings.on_queue_complete;
+                // Disarm before dispatching, not after: the action is a choice
+                // about *this* queue, and leaving "sleep when finished" set
+                // means the next download that ever finishes puts the machine
+                // to sleep without anyone asking for it again. Only when it is
+                // actually going to fire, though — a drain that completed
+                // nothing must leave the user's setting exactly where it was.
+                if power::will_act(action, completed) {
+                    let mut next = settings;
+                    next.on_queue_complete = downpour_core::settings::OnQueueComplete::Nothing;
+                    if let Err(e) = engine.update_settings(next) {
+                        tracing::warn!(error = %e, "could not disarm the post-queue action");
+                    }
+                }
                 power::on_queue_drained(&app, action, completed);
             }
         }

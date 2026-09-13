@@ -24,7 +24,7 @@ use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -94,6 +94,15 @@ struct Inner {
     /// Whether the queue had work last tick, so `QueueDrained` fires once on
     /// the busy-to-idle edge rather than on every tick of an empty queue.
     was_busy: AtomicBool,
+    /// Downloads that finished during the *current* busy period, reset on every
+    /// idle-to-busy edge.
+    ///
+    /// The drain report must describe this run, not the whole list. Counting
+    /// `Completed` items in the store instead reports every download that ever
+    /// finished, so a queue in which the single new download failed still
+    /// reports "7 completed" and the shell happily sleeps the machine.
+    completed_this_run: AtomicUsize,
+    failed_this_run: AtomicUsize,
 }
 
 /// Handle to the download engine. Cheap to clone; all clones share one queue.
@@ -138,6 +147,8 @@ impl Engine {
             name_lock: Mutex::new(()),
             next_sequence: AtomicI64::new(next_sequence),
             was_busy: AtomicBool::new(false),
+            completed_this_run: AtomicUsize::new(0),
+            failed_this_run: AtomicUsize::new(0),
         });
 
         let engine = Engine { inner };
@@ -639,6 +650,17 @@ impl Engine {
                 item.completed_at = Some(now_unix());
             }
         }
+        // Tallied here because this is the one place a download reaches a
+        // terminal state, and `detect_drain` needs the result of *this* run.
+        match status {
+            DownloadStatus::Completed => {
+                self.inner.completed_this_run.fetch_add(1, Ordering::SeqCst);
+            }
+            DownloadStatus::Failed => {
+                self.inner.failed_this_run.fetch_add(1, Ordering::SeqCst);
+            }
+            _ => {}
+        }
         self.persist(id);
         self.emit_status(id);
         Ok(())
@@ -684,26 +706,36 @@ impl Engine {
     /// Edge-triggered on purpose: a level-triggered version would fire twice a
     /// second forever on an empty queue, and the shell would shut the machine
     /// down the moment the app opened.
+    ///
+    /// `Paused` counts as busy. A paused download is outstanding work, not
+    /// finished work, so pausing the last running item must not be reported as
+    /// the queue draining — the shell turns a drain into sleep or shutdown, and
+    /// "I paused it to come back later" is the exact moment not to do that. The
+    /// cost of this is that a queue left with a paused item never drains, which
+    /// is the direction worth failing in.
     fn detect_drain(&self) {
         let busy = {
             let items = self.inner.items.read();
             items.values().any(|i| {
                 i.status.is_active()
-                    || matches!(i.status, DownloadStatus::Queued | DownloadStatus::Scheduled)
+                    || matches!(
+                        i.status,
+                        DownloadStatus::Queued | DownloadStatus::Scheduled | DownloadStatus::Paused
+                    )
             })
         };
         let was_busy = self.inner.was_busy.swap(busy, Ordering::SeqCst);
+
+        if !was_busy && busy {
+            // A new run starts here; the previous run's tally is spent.
+            self.inner.completed_this_run.store(0, Ordering::SeqCst);
+            self.inner.failed_this_run.store(0, Ordering::SeqCst);
+            return;
+        }
+
         if was_busy && !busy {
-            let items = self.inner.items.read();
-            let completed = items
-                .values()
-                .filter(|i| i.status == DownloadStatus::Completed)
-                .count();
-            let failed = items
-                .values()
-                .filter(|i| i.status == DownloadStatus::Failed)
-                .count();
-            drop(items);
+            let completed = self.inner.completed_this_run.swap(0, Ordering::SeqCst);
+            let failed = self.inner.failed_this_run.swap(0, Ordering::SeqCst);
             tracing::info!(completed, failed, "queue drained");
             self.emit(EngineEvent::QueueDrained { completed, failed });
         }

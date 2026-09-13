@@ -1138,6 +1138,137 @@ async fn an_idle_engine_does_not_announce_a_drain() {
     assert!(!saw_drain, "an empty queue must never report draining");
 }
 
+/// Collects the first `QueueDrained` within `secs`, if any.
+async fn drain_within(
+    rx: &mut tokio::sync::broadcast::Receiver<EngineEvent>,
+    secs: u64,
+) -> Option<(usize, usize)> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+            Ok(Ok(EngineEvent::QueueDrained { completed, failed })) => {
+                return Some((completed, failed))
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => return None,
+            Err(_) => {}
+        }
+    }
+    None
+}
+
+#[tokio::test]
+async fn a_drain_counts_only_the_run_that_just_finished() {
+    // The regression this exists for: the counts used to be a filter over the
+    // whole item list, so a queue whose only new download 404'd still reported
+    // the seven downloads that had finished earlier in the session. The shell
+    // reads `completed` to decide whether to sleep the machine, so that number
+    // being about the wrong run put the PC to sleep the instant a link broke.
+    let server = common::start(payload(64 * 1024)).await;
+    let dir = TempDir::new();
+    let mut settings = Settings::default();
+    settings.max_retries = 0;
+    let engine = engine_with(settings);
+    let mut rx = engine.subscribe();
+
+    engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "ok.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+    let first = drain_within(&mut rx, 40)
+        .await
+        .expect("first run never drained");
+    assert_eq!(first, (1, 0));
+
+    // A second run, in which the only download fails.
+    engine
+        .add(spec(
+            &server.url("/nope/missing.bin"),
+            &dir.0,
+            "bad.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+    let second = drain_within(&mut rx, 40)
+        .await
+        .expect("second run never drained");
+    assert_eq!(
+        second,
+        (0, 1),
+        "a run in which everything failed must report no completions,          regardless of what finished earlier"
+    );
+}
+
+#[tokio::test]
+async fn pausing_the_last_download_is_not_a_drain() {
+    // A paused download is outstanding work. Reporting it as a drain hands the
+    // shell its cue to sleep or shut down the machine, which is precisely what
+    // the user pausing something is asking it not to do.
+    let server = common::start(payload(8 * 1024 * 1024)).await;
+    let dir = TempDir::new();
+    // Throttled hard on purpose: against a localhost server an 8 MB download
+    // finishes before the test can observe it running, and the test would be
+    // racing to pause something already complete.
+    let mut settings = Settings::default();
+    settings.speed_limit_bps = 64 * 1024;
+    let engine = engine_with(settings);
+
+    engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "paused.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+
+    let e = engine.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.list().iter().any(|i| i.status.is_active())
+        })
+        .await,
+        "the download never started"
+    );
+
+    let mut rx = engine.subscribe();
+    engine.pause_all().unwrap();
+
+    assert!(
+        drain_within(&mut rx, 4).await.is_none(),
+        "pausing every download must not report the queue as drained"
+    );
+}
+
+#[tokio::test]
+async fn a_drain_does_not_fire_twice_for_one_run() {
+    // Edge-triggered, so the shell's power action cannot be re-triggered by a
+    // queue that simply stayed empty.
+    let server = common::start(payload(64 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+    let mut rx = engine.subscribe();
+
+    engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "one.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+
+    assert!(drain_within(&mut rx, 40).await.is_some(), "never drained");
+    assert!(
+        drain_within(&mut rx, 4).await.is_none(),
+        "an already-empty queue must not drain again"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // First-run folder setup
 // ---------------------------------------------------------------------------

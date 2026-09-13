@@ -303,6 +303,10 @@ pub enum EngineEvent {
     /// into the "sleep / shut down when finished" behaviour; the engine only
     /// reports the fact, because an engine that could power off the machine
     /// would be untestable.
+    ///
+    /// Both counts cover the run that just drained, not the contents of the
+    /// list — a drain in which nothing completed reports `completed: 0`, which
+    /// is what stops the shell acting on a queue that only failed.
     QueueDrained {
         completed: usize,
         failed: usize,
