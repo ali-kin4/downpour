@@ -57,6 +57,11 @@ export const RELEASES: Release[] = [
           "Sleep was forced on the machine immediately. It is now requested normally, after the same 60-second countdown as shutdown, and one Cancel calls off any of the three.",
       },
       {
+        title: "Free to use, not free to take",
+        detail:
+          "Downpour is free on as many machines as you like, at home or at work, with no account and no payment — and from this version nobody may redistribute it, sell it, or ship their own build of it.",
+      },
+      {
         title: "Credits, licences and trademark, properly stated",
         detail:
           "About now says who made Downpour, what it is built on, and that while the code is open, the name and logo are not free to take.",

@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-09-13
 
+### Changed
+
+- **Downpour is no longer MIT-licensed.** From this release it is free to use --
+  personally, commercially, at work, on any number of machines, with no account
+  and no payment -- and may not be redistributed, sold, modified for
+  distribution, or rebuilt and shipped by anyone else. [`LICENSE`](LICENSE) is
+  written to be read rather than skimmed past.
+
+  The source stays public, because a program that fetches things from the
+  internet on your behalf should be auditable by the people trusting it. That is
+  transparency, not a grant to reuse the code.
+
+  **This is not retroactive and cannot be.** Versions up to and including 1.0.1,
+  and the source published up to commit `caebb9f`, remain under the MIT Licence
+  permanently -- preserved verbatim in [`LICENSE-MIT`](LICENSE-MIT). A licence
+  already granted cannot be withdrawn, and anyone holding that code keeps those
+  rights. Third-party components keep their own licences, which this document
+  neither restricts nor overrides.
+
 ### Added
 
 - **An About window that answers the three things it is opened for**: which

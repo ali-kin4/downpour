@@ -1,35 +1,36 @@
 # Downpour trademark and brand policy
 
-Downpour's source code is open under the [MIT Licence](LICENSE). Its **name and
-its logo are not**.
+Downpour's [licence](LICENSE) governs the software. This document governs the
+name and the logo. They are separate rights and they are enforced separately: a
+trademark protects who may *call* something Downpour, which is a different
+question from who may copy the code.
 
-These are two separate things, and keeping them separate is deliberate. The MIT
-Licence covers copyright: it lets anyone read, modify, redistribute and sell the
-code. It says nothing about trademarks, and grants no right to use the name of
-the project or the mark it ships under. That is the same arrangement Firefox,
-Chromium and Docker use, and it exists to protect the people downloading the
-software: when a build calls itself Downpour, it should be Downpour.
+Both point the same way here. The licence does not permit redistributing the
+Software or shipping your own build of it; this policy additionally means that
+even with permission to distribute something, you could not put this name on it
+without asking. The reason is the person downloading it: when a build calls
+itself Downpour, it should be Downpour.
 
 **"Downpour", the Downpour name, and the Downpour droplet logo are trademarks of
 Ali Jabbary.**
 
 ## What you may do without asking
 
-- Use the software itself, for anything, including commercially. That is what
-  the MIT Licence is for.
+- Use the software itself, for anything, including commercially and at work.
+  That is what the [licence](LICENSE) is for, and it costs nothing.
 - Say truthfully that your work uses, integrates with, extends, or is compatible
   with Downpour — "a plugin for Downpour", "works with Downpour".
 - Write about Downpour: reviews, tutorials, comparisons, screenshots, videos,
   articles. No permission needed, and none implied.
-- Fork the code and publish your fork **under your own name and your own mark**.
-- Redistribute the official, unmodified binaries with the notices intact.
+- Build your own product and say truthfully that it was inspired by Downpour.
 
 ## What needs permission
 
-- Releasing a modified build **called Downpour**, or under a name or logo
-  confusingly close to it. Rename your fork instead — this is the one that
-  matters, because a broken or malicious build carrying this name damages
-  everyone who trusts it.
+- Releasing any build **called Downpour**, or anything under a name or logo
+  confusingly close to it. Note that redistributing builds is separately not
+  permitted by the [licence](LICENSE) — but this is the restriction that matters
+  most, because a broken or malicious build carrying this name damages everyone
+  who trusts it.
 - Using the name or logo as, or within, your own product name, company name,
   app-store listing, domain name, or social-media handle.
 - Using the logo as your own icon, or modifying it.
@@ -56,9 +57,9 @@ not to stop people building things.
 
 ## Notes
 
-This policy covers trademark only. Copyright is governed by [LICENSE](LICENSE),
-which is unaffected by anything written here, and which cannot be revoked for
-versions already released under it.
+This policy covers trademark only. Copyright is governed by [LICENSE](LICENSE)
+for current versions and [LICENSE-MIT](LICENSE-MIT) for versions up to 1.0.1,
+neither of which is affected by anything written here.
 
 Downpour's marks are unregistered, asserted under common law. Nothing in this
 document is legal advice; nothing in it waives any right not expressly granted.

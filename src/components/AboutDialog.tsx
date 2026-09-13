@@ -20,9 +20,12 @@
  * the impression this window exists to make. The credit carries its weight
  * through type, space and a steady hairline instead.
  *
- * The legal block is not boilerplate padding. Downpour's code is MIT and its
- * name is not, and someone deciding whether to trust a build should be able to
- * read that distinction here rather than infer it.
+ * The legal block is not boilerplate padding. Downpour is free to use and not
+ * free to redistribute, and someone deciding whether to trust a build -- or
+ * wondering what they are allowed to do with it -- should be able to read that
+ * here rather than infer it. The phrasing states the grant before the
+ * restriction, because the grant is the part that applies to almost everyone
+ * reading it.
  */
 
 import {
@@ -300,22 +303,24 @@ export function AboutDialog() {
       <section className="mt-6 border-t border-[var(--border-subtle)] pt-4">
         <div className="space-y-1 text-[11px] leading-relaxed text-[var(--text-tertiary)]">
           <p>
-            © {COPYRIGHT_YEAR} {AUTHOR}. Downpour's source code is released under
-            the MIT Licence.
+            © {COPYRIGHT_YEAR} {AUTHOR}. All rights reserved. Downpour is free to
+            use, personally and at work, on as many machines as you like. It may
+            not be redistributed, sold, or rebuilt and shipped by anyone else.
           </p>
           {/* Deliberately "trademarks", never "registered trademarks", and no ®
               anywhere: the marks are unregistered, and claiming otherwise would
               be a false statement of fact. */}
           <p>
             Downpour™, the Downpour name and the Downpour droplet logo are
-            trademarks of {AUTHOR}. The MIT Licence covers the code, not the name
-            — a fork is welcome, under its own.
+            trademarks of {AUTHOR}. The source is published so you can audit what
+            it does with your files and your network — that is transparency, not
+            a licence to reuse it.
           </p>
         </div>
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1">
           <QuietLink
-            label="MIT Licence"
+            label="Licence"
             onClick={() => void openUrl(`${REPO_URL}/blob/main/LICENSE`)}
           />
           <QuietLink

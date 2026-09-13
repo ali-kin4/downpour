@@ -12,7 +12,7 @@ desktop app that installs in a few seconds and needs no administrator rights.
 
 [![CI](https://github.com/ali-kin4/downpour/actions/workflows/ci.yml/badge.svg)](https://github.com/ali-kin4/downpour/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/ali-kin4/downpour?sort=semver)](https://github.com/ali-kin4/downpour/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Licence: free to use](https://img.shields.io/badge/licence-free%20to%20use-blue.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D4)](https://github.com/ali-kin4/downpour/releases/latest)
 
 </div>
@@ -35,7 +35,7 @@ connection costs you seconds instead of gigabytes, and gets out of the way.
 If you are here from IDM, the short pitch is: the parts you actually use —
 segmented transfers, the browser hand-off with your cookies attached, category
 folders, the scheduler, the tray — with an engine you can read, a test suite you
-can run, and an MIT licence.
+can run, and a licence that keeps it free to use.
 
 It is written in Rust. The engine that does the actual work is a standalone
 crate with no idea a window exists, which is why it can be tested against
@@ -518,7 +518,20 @@ is explicitly out of scope: [SECURITY.md](SECURITY.md).
 
 ## Licence
 
-[MIT](LICENSE) © 2026 Ali Jabbary — use it, change it, ship it, sell it.
+© 2026 Ali Jabbary. All rights reserved.
+
+**Downpour is free to use — personally and at work, on as many machines as you
+like, with no account and no payment. It is not free to take.** Redistributing
+it, selling it, or shipping your own build of it is not permitted. See
+[LICENSE](LICENSE); it is written to be read.
+
+The source is published so anyone can audit what a program that fetches things
+from the internet actually does with their files and their network. That is
+transparency, not a grant to reuse the code.
+
+Versions up to and including 1.0.1 were released under the MIT Licence and
+[stay that way permanently](LICENSE-MIT) — a granted licence cannot be
+withdrawn.
 
 ### Trademark
 

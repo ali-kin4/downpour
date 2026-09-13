@@ -1,21 +1,135 @@
-MIT License
+Downpour Software Licence
+Copyright (c) 2026 Ali Jabbary. All rights reserved.
 
-Copyright (c) 2026 Ali Jabbary
+Downpour is free to use. It is not free to take. This licence is written to say
+exactly that, in language you can actually read.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+By installing, copying or using Downpour ("the Software"), you accept these
+terms. If you do not accept them, do not install or use it.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. WHAT YOU MAY DO
+
+   You are granted a free, worldwide, non-exclusive, non-transferable licence
+   to:
+
+   a. install and use the Software on any number of devices you own or control;
+
+   b. use it for any purpose, personal or commercial, including at work and
+      inside a business, at no charge and with no registration; and
+
+   c. keep backup copies for your own use.
+
+   No payment, account or permission is required for any of the above.
+
+
+2. WHAT YOU MAY NOT DO
+
+   Except where a right below is granted to you by law and cannot be excluded
+   by agreement, or by the licence of a third-party component under section 4,
+   you may not:
+
+   a. distribute, publish, upload, share, sell, rent, lease, lend, sublicense
+      or otherwise make the Software available to anyone else, whether modified
+      or not, and whether or not for payment;
+
+   b. modify the Software, or create derivative works, adaptations, ports or
+      forks of it, for distribution to anyone else;
+
+   c. incorporate the Software, or any part of it, into another product or
+      service that you distribute or operate for others;
+
+   d. reverse engineer, decompile or disassemble the Software, except to the
+      extent that applicable law expressly permits it despite this restriction
+      — including, where it applies to you, for interoperability purposes;
+
+   e. remove, obscure or alter any copyright, trademark or licence notice; or
+
+   f. use the Downpour name, the Downpour logo, or any confusingly similar name
+      or mark, for your own software, service or business. See TRADEMARK.md.
+
+   Using the Software yourself is not distribution. Showing it to someone,
+   writing about it, or telling them where to download it is not distribution.
+   Handing them a copy is.
+
+
+3. THE SOURCE CODE
+
+   Downpour's source code is published so that anyone can read it, audit it,
+   and verify what the Software does with their files and their network — which
+   matters for a program that fetches things from the internet on your behalf.
+
+   Publishing it is not a grant to reuse it. You may read, study and privately
+   compile the source for your own use. You may not distribute it, publish your
+   own builds of it, or reuse it in your own projects, except as sections 1 and
+   2 allow.
+
+   If you submit a contribution — a pull request, patch or suggested change —
+   you grant Ali Jabbary a perpetual, irrevocable, worldwide, royalty-free
+   licence to use, modify and distribute it as part of the Software. You keep
+   your own copyright in what you wrote.
+
+
+4. THIRD-PARTY COMPONENTS
+
+   The Software is built on open-source components that remain under their own
+   licences. Those licences govern those components, and nothing in this
+   document restricts, reduces or overrides any right they grant you. The
+   principal components and their licences are listed in the Software's About
+   window and in src/lib/acknowledgements.ts.
+
+   Some functionality relies on software that Downpour downloads from its own
+   publisher at your request rather than distributing — yt-dlp is one. Such
+   software is not part of the Software and is covered solely by its own
+   licence.
+
+
+5. EARLIER VERSIONS
+
+   Downpour was released under the MIT Licence up to and including version
+   1.0.1, and the source published up to and including commit caebb9f. Those
+   versions stay under the MIT Licence permanently, and this document does not
+   and cannot apply retroactively to them. See LICENSE-MIT.
+
+
+6. OWNERSHIP
+
+   The Software is licensed, not sold. Ali Jabbary retains all right, title and
+   interest in it, including all copyright and all trademark rights. Any right
+   not expressly granted here is reserved.
+
+
+7. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+
+
+8. LIMITATION OF LIABILITY
+
+   TO THE FULLEST EXTENT PERMITTED BY LAW, ALI JABBARY SHALL NOT BE LIABLE FOR
+   ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+   TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
+   OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. THIS INCLUDES LOSS OF DATA AND
+   LOSS OF DOWNLOADED FILES.
+
+   Nothing in this licence excludes or limits liability where the law does not
+   allow it to be excluded or limited.
+
+
+9. TERMINATION
+
+   This licence ends automatically if you breach section 2. On termination you
+   must stop using the Software and delete your copies. Sections 6, 7 and 8
+   survive termination.
+
+
+10. SEVERABILITY
+
+   If any provision is held unenforceable, the rest remains in force.
+
+
+Questions, or want permission for something section 2 forbids? Open an issue at
+https://github.com/ali-kin4/downpour/issues or get in touch through
+https://alijabbary.com. Permission is often given; it just has to be asked for.
