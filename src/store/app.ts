@@ -25,7 +25,14 @@ import type {
 import { playChime } from "../lib/chime";
 import { matchesFilter } from "../lib/types";
 
-export type SortKey = "added" | "name" | "size" | "progress" | "speed" | "status";
+export type SortKey =
+  | "added"
+  | "name"
+  | "size"
+  | "progress"
+  | "speed"
+  | "status"
+  | "completed";
 export type SortDir = "asc" | "desc";
 
 export interface Toast {

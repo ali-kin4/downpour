@@ -236,6 +236,14 @@ function filterAndSort(
         return dir * (a.speedBps - b.speedBps);
       case "status":
         return dir * ((STATUS_RANK[b.status] ?? 9) - (STATUS_RANK[a.status] ?? 9));
+      case "completed":
+        // Unfinished downloads have no finish time. They sort to the end in
+        // either direction rather than pretending to be the oldest thing in the
+        // list, which is what a 0 would do.
+        if (!a.completedAt && !b.completedAt) return 0;
+        if (!a.completedAt) return 1;
+        if (!b.completedAt) return -1;
+        return dir * (a.completedAt - b.completedAt);
       case "added":
       default:
         return dir * (a.sequence - b.sequence);

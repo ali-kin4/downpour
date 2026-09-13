@@ -6,6 +6,8 @@ import { Check, Folder, Laptop, Moon, Sun } from "lucide-react";
 import { Button, Field, Row, Segmented } from "../ui";
 import { CategoryFolders } from "../CategoryFolders";
 import { ACCENTS } from "../../hooks/useTheme";
+import { DEFAULT_THEME_ID, themeById } from "../../themes/registry";
+import { ThemeGallery } from "./ThemeGallery";
 import type { ConflictPolicy, Settings } from "../../lib/types";
 import { useApp } from "../../store/app";
 import { DraftInput, Group, Setting, current, patch } from "./kit";
@@ -23,6 +25,9 @@ export function GeneralTab({ settings }: { settings: Settings }) {
       });
       if (typeof picked === "string") await patch({ downloadDir: picked });
     });
+
+  // A non-default theme carries its own accent, which outranks the swatches.
+  const themed = settings.palette !== DEFAULT_THEME_ID;
 
   return (
     <>
@@ -100,12 +105,30 @@ export function GeneralTab({ settings }: { settings: Settings }) {
           </Row>
         </Setting>
 
+        <Setting id="general.appearance.palette">
+          <div className="py-2.5">
+            <div className="text-[13px] text-[var(--text-primary)]">
+              Colour theme
+            </div>
+            <p className="mt-0.5 mb-3 text-[11px] leading-snug text-[var(--text-tertiary)]">
+              Sits on top of the setting above rather than replacing it. Every
+              theme has a light and a dark side, so on System it follows Windows
+              from day to night and stays itself.
+            </p>
+            <ThemeGallery value={settings.palette} />
+          </div>
+        </Setting>
+
         <Setting id="general.appearance.accent">
           <Row
             label="Accent colour"
-            hint="Used for progress bars, the selected sidebar item, focus rings and every primary button."
+            hint={
+              themed
+                ? `Set by ${themeById(settings.palette).name}. Choose the Downpour theme to pick an accent yourself.`
+                : "Used for progress bars, the selected sidebar item, focus rings and every primary button."
+            }
           >
-            <AccentPicker value={settings.accent} />
+            <AccentPicker value={settings.accent} disabled={themed} />
           </Row>
         </Setting>
       </Group>
@@ -122,9 +145,19 @@ export function GeneralTab({ settings }: { settings: Settings }) {
  * root. The tick is not decoration: it is what tells you which one is selected
  * without relying on seeing the ring colour.
  */
-function AccentPicker({ value }: { value: string }) {
+function AccentPicker({
+  value,
+  disabled,
+}: {
+  value: string;
+  disabled?: boolean;
+}) {
   return (
-    <div role="radiogroup" aria-label="Accent colour" className="flex gap-2">
+    <div
+      role="radiogroup"
+      aria-label="Accent colour"
+      className={clsx("flex gap-2", disabled && "pointer-events-none opacity-40")}
+    >
       {ACCENTS.map((a) => {
         const selected = value === a.id;
         return (
@@ -135,6 +168,7 @@ function AccentPicker({ value }: { value: string }) {
             aria-checked={selected}
             aria-label={a.label}
             title={a.label}
+            disabled={disabled}
             onClick={() => void patch({ accent: a.id })}
             className={clsx(
               "inline-flex size-7 items-center justify-center rounded-full border-2 p-[2px]",

@@ -147,6 +147,8 @@ export interface Settings {
   userAgent: string;
   theme: string;
   accent: string;
+  /** Colour theme id, laid over light/dark/auto. See src/themes. */
+  palette: string;
   startMinimized: boolean;
   launchAtLogin: boolean;
   closeToTray: boolean;

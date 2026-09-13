@@ -32,16 +32,24 @@ import {
   formatDuration,
   formatRelative,
   formatSpeed,
+  formatStamp,
   hostOf,
 } from "../lib/format";
 import type { DownloadItem, DownloadStatus } from "../lib/types";
 import { canPause, canStart } from "../lib/types";
 import { useApp, useItem } from "../store/app";
-import { COLUMN_GAP, gridTemplate, useColumns } from "../store/columns";
+import {
+  COLUMN_GAP,
+  gridTemplate,
+  useColumns,
+  type ColumnId,
+} from "../store/columns";
 
 export function DownloadRow({ id }: { id: string }) {
   const item = useItem(id);
   const widths = useColumns((s) => s.widths);
+  const hidden = useColumns((s) => s.hidden);
+  const show = (id: ColumnId) => !hidden.includes(id);
   const selected = useApp((s) => s.selection.has(id));
   const select = useApp((s) => s.select);
   const run = useApp((s) => s.run);
@@ -87,7 +95,10 @@ export function DownloadRow({ id }: { id: string }) {
             ? "bg-[var(--surface-selected)]"
             : "bg-[var(--surface-raised)] hover:bg-[var(--surface-hover)]",
         )}
-        style={{ gridTemplateColumns: gridTemplate(widths), columnGap: COLUMN_GAP }}
+        style={{
+          gridTemplateColumns: gridTemplate(widths, hidden),
+          columnGap: COLUMN_GAP,
+        }}
       >
         <input
           type="checkbox"
@@ -120,11 +131,14 @@ export function DownloadRow({ id }: { id: string }) {
         </div>
 
         {/* Size */}
-        <div className="text-right text-[12px] tabular-nums text-[var(--text-secondary)]">
-          {formatBytes(item.totalBytes)}
-        </div>
+        {show("size") && (
+          <div className="text-right text-[12px] tabular-nums text-[var(--text-secondary)]">
+            {formatBytes(item.totalBytes)}
+          </div>
+        )}
 
         {/* Progress */}
+        {show("progress") && (
         <div>
           <ProgressBar
             value={progress}
@@ -144,23 +158,60 @@ export function DownloadRow({ id }: { id: string }) {
             )}
           </div>
         </div>
+        )}
 
         {/* Speed */}
-        <div className="text-right text-[12px] tabular-nums text-[var(--text-secondary)]">
-          {item.status === "running" && item.speedBps > 0 ? formatSpeed(item.speedBps) : "—"}
-        </div>
+        {show("speed") && (
+          <div className="text-right text-[12px] tabular-nums text-[var(--text-secondary)]">
+            {item.status === "running" && item.speedBps > 0
+              ? formatSpeed(item.speedBps)
+              : "—"}
+          </div>
+        )}
 
         {/* Time left */}
-        <div className="text-right text-[12px] tabular-nums text-[var(--text-tertiary)]">
-          {item.status === "running" && item.etaSecs !== null
-            ? formatDuration(item.etaSecs)
-            : item.status === "completed"
-              ? formatRelative(item.completedAt)
-              : "—"}
-        </div>
+        {show("left") && (
+          <div className="text-right text-[12px] tabular-nums text-[var(--text-tertiary)]">
+            {item.status === "running" && item.etaSecs !== null
+              ? formatDuration(item.etaSecs)
+              : item.status === "completed"
+                ? formatRelative(item.completedAt)
+                : "—"}
+          </div>
+        )}
 
         {/* Status */}
-        <StatusPill item={item} />
+        {show("status") && <StatusPill item={item} />}
+
+        {/* When the link was added. Absolute, because this column is scanned
+            down and compared row to row, not read as a sentence. */}
+        {show("added") && (
+          <div
+            className="truncate text-[12px] tabular-nums text-[var(--text-secondary)]"
+            title={new Date(item.createdAt * 1000).toLocaleString()}
+          >
+            {formatStamp(item.createdAt)}
+          </div>
+        )}
+
+        {show("completed") && (
+          <div
+            className="truncate text-[12px] tabular-nums text-[var(--text-tertiary)]"
+            title={
+              item.completedAt
+                ? new Date(item.completedAt * 1000).toLocaleString()
+                : undefined
+            }
+          >
+            {formatStamp(item.completedAt)}
+          </div>
+        )}
+
+        {show("source") && (
+          <div className="truncate text-[12px] text-[var(--text-tertiary)]" title={item.url}>
+            {item.source === "extension" ? "Browser" : hostOf(item.url)}
+          </div>
+        )}
 
         {/* Inline actions */}
         <div className="flex items-center justify-end gap-0.5">

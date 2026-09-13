@@ -13,7 +13,16 @@
 
 import { create } from "zustand";
 
-export type ColumnId = "name" | "size" | "progress" | "speed" | "left" | "status";
+export type ColumnId =
+  | "name"
+  | "size"
+  | "progress"
+  | "speed"
+  | "left"
+  | "status"
+  | "added"
+  | "completed"
+  | "source";
 
 export const COLUMNS: {
   id: ColumnId;
@@ -21,6 +30,9 @@ export const COLUMNS: {
   min: number;
   align?: "right";
   sortable: boolean;
+  /** Off until asked for. Every column shown by default costs the Name column
+   *  width, which is the one people actually read. */
+  optional?: boolean;
 }[] = [
   { id: "name", label: "Name", min: 140, sortable: true },
   { id: "size", label: "Size", min: 62, align: "right", sortable: true },
@@ -28,7 +40,15 @@ export const COLUMNS: {
   { id: "speed", label: "Speed", min: 62, align: "right", sortable: true },
   { id: "left", label: "Left", min: 56, align: "right", sortable: false },
   { id: "status", label: "Status", min: 80, sortable: true },
+  { id: "added", label: "Added", min: 96, sortable: true },
+  { id: "completed", label: "Finished", min: 96, sortable: true, optional: true },
+  { id: "source", label: "Source", min: 90, sortable: false, optional: true },
 ];
+
+/** Columns hidden until the user turns them on, from the header's own menu. */
+const HIDDEN_BY_DEFAULT: ColumnId[] = COLUMNS.filter((c) => c.optional).map(
+  (c) => c.id,
+);
 
 /** Fixed leading checkbox and trailing action cells; never resizable. */
 export const GUTTER_LEAD = 28;
@@ -45,6 +65,9 @@ const DEFAULTS: Widths = {
   speed: 84,
   left: 70,
   status: 104,
+  added: 118,
+  completed: 118,
+  source: 96,
 };
 
 /** Past this, extra width in the Name column stops buying readability. */
@@ -61,21 +84,40 @@ function clamp(value: number, min: number, max: number): number {
 interface Stored {
   widths: Widths;
   nameManual: boolean;
+  /** Columns the user has switched off. Absent means "the defaults". */
+  hidden: ColumnId[];
 }
 
 function load(): Stored {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { widths: { ...DEFAULTS }, nameManual: false };
+    if (!raw) {
+      return {
+        widths: { ...DEFAULTS },
+        nameManual: false,
+        hidden: [...HIDDEN_BY_DEFAULT],
+      };
+    }
     const parsed = JSON.parse(raw) as Partial<Stored>;
     return {
       // Merge over the defaults so a column added in a later version does not
       // arrive as `undefined` and collapse the grid.
       widths: { ...DEFAULTS, ...(parsed.widths ?? {}) },
       nameManual: Boolean(parsed.nameManual),
+      // A layout saved before optional columns existed has no opinion about
+      // them, so it gets the defaults rather than every new column switched on.
+      hidden: Array.isArray(parsed.hidden)
+        ? parsed.hidden.filter((id): id is ColumnId =>
+            COLUMNS.some((c) => c.id === id),
+          )
+        : [...HIDDEN_BY_DEFAULT],
     };
   } catch {
-    return { widths: { ...DEFAULTS }, nameManual: false };
+    return {
+      widths: { ...DEFAULTS },
+      nameManual: false,
+      hidden: [...HIDDEN_BY_DEFAULT],
+    };
   }
 }
 
@@ -93,6 +135,8 @@ interface ColumnState extends Stored {
   resize: (id: ColumnId, px: number) => void;
   endResize: (id: ColumnId) => void;
   autoFit: (id: ColumnId, contentPx: number) => void;
+  /** Shows or hides an optional column. Name is never hideable. */
+  toggle: (id: ColumnId) => void;
   /** Gives Name whatever room the container has left over. */
   fitToContainer: (containerPx: number) => void;
   reset: () => void;
@@ -106,7 +150,27 @@ export const useColumns = create<ColumnState>((set, get) => ({
   setWidth(id, px) {
     const min = COLUMNS.find((c) => c.id === id)?.min ?? 60;
     const widths = { ...get().widths, [id]: Math.max(min, Math.round(px)) };
-    const next = { widths, nameManual: id === "name" ? true : get().nameManual };
+    const next = {
+      widths,
+      nameManual: id === "name" ? true : get().nameManual,
+      hidden: get().hidden,
+    };
+    set(next);
+    persist(next);
+  },
+
+  toggle(id) {
+    // The Name column is the row's identity; hiding it would leave a table of
+    // sizes and percentages belonging to nothing.
+    if (id === "name") return;
+    const { hidden, widths, nameManual } = get();
+    const next = {
+      widths,
+      nameManual,
+      hidden: hidden.includes(id)
+        ? hidden.filter((h) => h !== id)
+        : [...hidden, id],
+    };
     set(next);
     persist(next);
   },
@@ -117,7 +181,11 @@ export const useColumns = create<ColumnState>((set, get) => ({
   },
 
   endResize(id) {
-    const state = { widths: get().widths, nameManual: id === "name" ? true : get().nameManual };
+    const state = {
+      widths: get().widths,
+      nameManual: id === "name" ? true : get().nameManual,
+      hidden: get().hidden,
+    };
     set(state);
     persist(state);
   },
@@ -127,7 +195,11 @@ export const useColumns = create<ColumnState>((set, get) => ({
     // A little breathing room on the right, and a ceiling so one absurd
     // filename cannot push every other column off the screen.
     const px = Math.min(900, Math.max(min, Math.round(contentPx) + 24));
-    const state = { widths: { ...get().widths, [id]: px }, nameManual: id === "name" ? true : get().nameManual };
+    const state = {
+      widths: { ...get().widths, [id]: px },
+      nameManual: id === "name" ? true : get().nameManual,
+      hidden: get().hidden,
+    };
     set(state);
     persist(state);
   },
@@ -158,15 +230,28 @@ export const useColumns = create<ColumnState>((set, get) => ({
   },
 
   reset() {
-    const state = { widths: { ...DEFAULTS }, nameManual: false };
+    // Reset restores the default columns too -- a layout someone has given up
+    // on includes whichever columns they switched on.
+    const state = {
+      widths: { ...DEFAULTS },
+      nameManual: false,
+      hidden: [...HIDDEN_BY_DEFAULT],
+    };
     set(state);
     persist(state);
   },
 }));
 
 /** The `grid-template-columns` value both the header and every row use. */
-export function gridTemplate(widths: Widths): string {
-  const middle = COLUMNS.map((c) => `${widths[c.id]}px`).join(" ");
+/** The columns actually on screen, in order. */
+export function visibleColumns(hidden: ColumnId[]) {
+  return COLUMNS.filter((c) => !hidden.includes(c.id));
+}
+
+export function gridTemplate(widths: Widths, hidden: ColumnId[] = []): string {
+  const middle = visibleColumns(hidden)
+    .map((c) => `${widths[c.id]}px`)
+    .join(" ");
   return `${GUTTER_LEAD}px ${middle} ${GUTTER_TRAIL}px`;
 }
 

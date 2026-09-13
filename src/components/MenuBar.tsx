@@ -283,7 +283,60 @@ export function MenuBar() {
           )}
         </div>
       ))}
+
+      {/* Settings is the one thing people open constantly, and burying it three
+          levels into Tools makes a menu bar feel like a filing cabinet. The
+          shortcut still works; this is for the hand already on the mouse. */}
+      <div className="ml-auto flex items-center gap-0.5 pr-0.5">
+        <BarButton
+          label="What's new"
+          icon={<Sparkles size={15} />}
+          onClick={() => s().setWhatsNewOpen(true)}
+        />
+        <BarButton
+          label="Settings"
+          shortcut="Ctrl+,"
+          icon={<Cog size={15} />}
+          onClick={() => s().setSettingsOpen(true)}
+        />
+      </div>
     </div>
+  );
+}
+
+/**
+ * An icon button in the bar itself, as opposed to an entry inside a menu.
+ *
+ * Reserved for things opened often enough that a two-click path is a tax.
+ * `title` carries the label and the shortcut, because an unlabelled gear is
+ * only obvious to someone who already knows what it does.
+ */
+function BarButton({
+  label,
+  shortcut,
+  icon,
+  onClick,
+}: {
+  label: string;
+  shortcut?: string;
+  icon: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={shortcut ? `${label} (${shortcut})` : label}
+      onClick={onClick}
+      className={clsx(
+        "grid size-7 place-items-center rounded-[6px]",
+        "text-[var(--text-secondary)] transition-colors duration-100",
+        "hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
+        "active:bg-[var(--surface-selected)]",
+      )}
+    >
+      {icon}
+    </button>
   );
 }
 

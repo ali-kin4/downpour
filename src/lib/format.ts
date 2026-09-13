@@ -97,6 +97,35 @@ export function formatRelative(unixSecs: number | null): string {
   return new Date(unixSecs * 1000).toLocaleDateString();
 }
 
+/**
+ * A date for a column you scan down, not a sentence.
+ *
+ * Absolute rather than relative: "3d ago" is fine in a status line but useless
+ * in a sorted column, where the eye is comparing rows to each other. Today's
+ * downloads show only a time, because the date is the same on every row and
+ * repeating it is noise; anything older shows the day.
+ */
+export function formatStamp(unixSecs: number | null | undefined): string {
+  if (!unixSecs) return "—";
+  const d = new Date(unixSecs * 1000);
+  const now = new Date();
+  const sameDay =
+    d.getDate() === now.getDate() &&
+    d.getMonth() === now.getMonth() &&
+    d.getFullYear() === now.getFullYear();
+  const time = d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  if (sameDay) return time;
+  const day = d.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(d.getFullYear() === now.getFullYear() ? {} : { year: "2-digit" }),
+  });
+  return `${day} ${time}`;
+}
+
 /** Truncates the middle of a long path so both ends stay readable. */
 export function elideMiddle(text: string, max = 48): string {
   if (text.length <= max) return text;

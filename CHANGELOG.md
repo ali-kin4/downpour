@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-13
+
+### Added
+
+- **Eleven colour themes**, and they layer on top of Light/Dark/System rather
+  than replacing it. Every theme is a *pair* — Sakura's light side is blossom on
+  paper, its dark side is the same tree at night — so someone left on System
+  keeps their theme when Windows flips at dusk instead of being handed a
+  stranger. Sakura, Matcha, Cinnamon, Moonlit, Grape Soda, Peach Fuzz, Mint
+  Condition, Glacier, Bubblegum and Midnight Oil, beside the original Downpour.
+
+  Each is generated from a short spec rather than hand-written: 11 themes x 26
+  tokens x 2 modes is 572 values nobody keeps consistent, and by the tenth theme
+  the hover tint has drifted from the first's. A theme states its character --
+  ground, ink, accent pair -- and the builder derives the rest identically.
+  `TokenName` is a literal union, so a theme missing a token is a compile error
+  rather than one row of one table quietly rendering in the wrong red.
+
+  The picker previews each theme as a miniature of the real chrome, painted by
+  the very rules the window will use, in whichever mode the app is currently in.
+  Themes are plain data and register through one function, which is the seam an
+  installable theme would enter by.
+- **A date for every download.** `Added` shows when the link was added and is on
+  by default; `Finished` and `Source` are available from the header's own
+  right-click menu, the way Explorer's details view works. Today's downloads show
+  a time, older ones a date, and the full stamp is on hover -- absolute rather
+  than "3d ago", because a column is scanned down and compared row to row.
+
+  Sorting by `Added` orders by insertion, not by the clock: twenty links pasted
+  at once share the same second, and sorting by timestamp would shuffle them.
+  Sorting by `Finished` puts unfinished downloads at the end in both directions
+  rather than letting a missing date read as the oldest row.
+- **Settings and What's new in the menu bar**, as icon buttons on the right.
+  Settings is opened constantly and burying it inside Tools makes a menu bar
+  feel like a filing cabinet. Both keep their menu entries and `Ctrl+,` still
+  works.
+
 ### Changed
 
 - **Every dialog's close button is a real control.** It was the generic ghost
@@ -427,7 +464,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.0
 [1.1.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.0
 [1.0.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.0.1

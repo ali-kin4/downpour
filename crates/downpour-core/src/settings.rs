@@ -185,6 +185,12 @@ pub struct Settings {
     pub user_agent: String,
     pub theme: String,
     pub accent: String,
+    /// The colour theme laid over `theme`. Orthogonal to light/dark/auto: a
+    /// palette supplies both modes, so someone on "auto" keeps their theme when
+    /// the system flips at dusk. Lives here rather than in browser storage
+    /// because the compact progress panel is a second webview reading the same
+    /// settings, and it must not sit there in a different palette.
+    pub palette: String,
     pub start_minimized: bool,
     pub launch_at_login: bool,
     pub close_to_tray: bool,
@@ -230,6 +236,7 @@ impl std::fmt::Debug for Settings {
             .field("rpc_token", &"<redacted>")
             .field("user_agent", &self.user_agent)
             .field("theme", &self.theme)
+            .field("palette", &self.palette)
             .field("accent", &self.accent)
             .field("start_minimized", &self.start_minimized)
             .field("launch_at_login", &self.launch_at_login)
@@ -267,6 +274,7 @@ impl Default for Settings {
             rpc_enabled: true,
             user_agent: DEFAULT_USER_AGENT.to_string(),
             theme: "system".to_string(),
+            palette: "downpour".to_string(),
             accent: "aurora".to_string(),
             start_minimized: false,
             launch_at_login: false,

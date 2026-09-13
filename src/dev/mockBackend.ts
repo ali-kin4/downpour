@@ -155,6 +155,7 @@ const settings: Settings = {
   userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0",
   theme: "system",
   accent: "aurora",
+  palette: "downpour",
   startMinimized: false,
   launchAtLogin: false,
   closeToTray: true,

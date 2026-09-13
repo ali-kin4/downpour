@@ -84,6 +84,12 @@ export const SETTINGS_INDEX = [
     keywords: "dark light system night mode",
   },
   {
+    id: "general.appearance.palette",
+    label: "Colour theme",
+    keywords:
+      "theme themes palette skin colour scheme sakura matcha cinnamon moonlit grape peach mint glacier bubblegum midnight cute pretty",
+  },
+  {
     id: "general.appearance.accent",
     label: "Accent colour",
     keywords: "color highlight aurora ember forest orchid slate gradient",

@@ -37,6 +37,33 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: "1.2.0",
+    date: "2026-09-13",
+    summary: "Eleven themes, dates on your downloads, and settings one click away.",
+    notes: [
+      {
+        title: "Eleven colour themes",
+        detail:
+          "Sakura, Matcha, Cinnamon, Moonlit, Grape Soda, Peach Fuzz, Mint Condition, Glacier, Bubblegum and Midnight Oil. Each has a light and a dark side, so they sit on top of your Light/Dark/System choice rather than replacing it — leave Downpour on System and your theme follows Windows from day to night. Settings › General › Appearance.",
+      },
+      {
+        title: "See when you added a download",
+        detail:
+          "The list has an Added column. Right-click the column headings to add Finished and Source too, or to hide anything you do not use.",
+      },
+      {
+        title: "Settings is one click away",
+        detail:
+          "A gear in the top-right of the menu bar, next to a button for this window.",
+      },
+      {
+        title: "Dialogs close properly",
+        detail:
+          "The little × in the corner of every dialog was too small and too faint to aim at. It is now a real button.",
+      },
+    ],
+  },
+  {
     version: "1.1.1",
     date: "2026-09-13",
     notes: [
