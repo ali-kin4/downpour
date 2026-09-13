@@ -88,7 +88,8 @@ pub async fn check_for_updates(app: AppHandle) -> Result<UpdateCheck, String> {
             name: None,
         });
     }
-    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
         // Unauthenticated calls are rate-limited per address. Say so, rather
         // than letting a throttled check read as "up to date".
         return Err(
