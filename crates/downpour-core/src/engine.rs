@@ -19,7 +19,9 @@ use crate::settings::{ConflictPolicy, Settings};
 use crate::speed::SpeedTracker;
 use crate::store::Store;
 use crate::throttle::RateLimiter;
-use crate::transfer::{self, Control, TransferConfig, TransferContext, TransferProgress};
+use crate::transfer::{
+    self, Control, PauseReason, TransferConfig, TransferContext, TransferProgress,
+};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -427,6 +429,13 @@ impl Engine {
             DownloadStatus::Queued | DownloadStatus::Scheduled | DownloadStatus::Idle
         ) {
             self.set_status(id, DownloadStatus::Paused, None)?;
+            // The pump can start a queued item in the gap between the lookup
+            // above and that write. If a handle has appeared, signal it too --
+            // otherwise the row reads `Paused` over a transfer that is still
+            // running. Signalling one that is already stopping is harmless.
+            if let Some(run) = self.inner.running.read().get(id) {
+                run.control.pause();
+            }
         }
         Ok(())
     }
@@ -584,7 +593,9 @@ impl Engine {
         self.inner.shutdown.store(true, Ordering::SeqCst);
         let running: Vec<Arc<Running>> = self.inner.running.read().values().cloned().collect();
         for r in &running {
-            r.control.pause();
+            // Parked, not user-paused: closing the app is not the user asking
+            // for a scheduled download to stop waiting for its window.
+            r.control.park();
         }
         // Give the workers a moment to flush their sidecars. Waiting forever
         // would hang the app on a wedged socket, so this is bounded.
@@ -840,7 +851,7 @@ impl Engine {
         for id in ids {
             if let Some(run) = self.inner.running.read().get(&id) {
                 tracing::info!(id, "scheduler window closed; pausing");
-                run.control.pause();
+                run.control.park();
             }
         }
     }
@@ -935,8 +946,22 @@ impl Engine {
             .write()
             .insert(id.to_string(), Arc::clone(&run));
 
+        // `fill_free_slots` picked this id under a read lock it has since
+        // dropped, so a pause or cancel may have landed in between. Re-check
+        // under the write lock that will flip the status, or a Pause All
+        // arriving in that gap is overwritten and the download runs anyway.
         {
             let mut items = self.inner.items.write();
+            let still_queued = items
+                .get(id)
+                .is_some_and(|i| i.status == DownloadStatus::Queued);
+            if !still_queued {
+                // Drop the handle again; leaving it behind would make `pause`
+                // and `cancel` signal a transfer that never started.
+                drop(items);
+                self.inner.running.write().remove(id);
+                return Ok(());
+            }
             if let Some(i) = items.get_mut(id) {
                 i.status = DownloadStatus::Probing;
                 i.error = None;
@@ -1129,6 +1154,14 @@ impl Engine {
                 i.elapsed_ms = run.started_at.elapsed().as_millis() as u64;
             }
         }
+        // Read off the handle before it goes, or the pause below cannot tell a
+        // user pause from a parked one.
+        let pause_reason = self
+            .inner
+            .running
+            .read()
+            .get(id)
+            .map(|r| r.control.pause_reason());
         self.inner.running.write().remove(id);
 
         match outcome {
@@ -1155,8 +1188,12 @@ impl Engine {
                 }
             }
             Err(Error::Paused) => {
-                // Back to whichever waiting state it belongs in, so a window
-                // close does not look like a user pause.
+                // A parked transfer goes back to whichever waiting state it
+                // belongs in, so a window close does not look like a user
+                // pause. A *user* pause must never land on `Scheduled`:
+                // `promote_waiting` would hand it straight back to the queue on
+                // the next tick and restart the download the user just stopped.
+                let parked = pause_reason == Some(PauseReason::Parked);
                 let scheduled = self
                     .inner
                     .items
@@ -1164,7 +1201,7 @@ impl Engine {
                     .get(id)
                     .map(|i| i.scheduled)
                     .unwrap_or(false);
-                let next = if scheduled && self.inner.settings.read().schedule.enabled {
+                let next = if parked && scheduled && self.inner.settings.read().schedule.enabled {
                     DownloadStatus::Scheduled
                 } else {
                     DownloadStatus::Paused

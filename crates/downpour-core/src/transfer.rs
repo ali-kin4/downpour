@@ -64,6 +64,17 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
 const CONTROL_RUN: u8 = 0;
 const CONTROL_PAUSE: u8 = 1;
 const CONTROL_CANCEL: u8 = 2;
+const CONTROL_PARK: u8 = 3;
+
+/// Why a paused transfer stopped, which decides the state it lands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseReason {
+    /// The user asked. Nothing may start it again on its own.
+    User,
+    /// The engine parked it -- a scheduler window closed, or the app is
+    /// shutting down. A scheduled item may go back to waiting for its window.
+    Parked,
+}
 
 /// Pause/cancel signalling, checked between chunks so it takes effect in
 /// milliseconds without tearing a write.
@@ -79,6 +90,30 @@ impl Control {
     pub fn pause(&self) {
         self.flag.store(CONTROL_PAUSE, Ordering::SeqCst);
     }
+    /// Stops the transfer the way a closed window or a shutdown does. It ends
+    /// with the same `Error::Paused`; only `pause_reason` tells the two apart,
+    /// and the engine uses that to decide between `Paused` and `Scheduled`.
+    pub fn park(&self) {
+        // Only a still-running transfer may be parked. A plain store would let
+        // a shutdown landing just after a user pause -- or after a cancel --
+        // overwrite that decision, and the item would come back on the next
+        // window as though the user had never touched it.
+        let _ = self.flag.compare_exchange(
+            CONTROL_RUN,
+            CONTROL_PARK,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+    }
+    /// `Parked` only when the engine parked this transfer. Anything else --
+    /// including a flag that has since been reset -- counts as the user's own
+    /// pause, because resuming on its own is the wrong way to be wrong.
+    pub fn pause_reason(&self) -> PauseReason {
+        match self.flag.load(Ordering::Relaxed) {
+            CONTROL_PARK => PauseReason::Parked,
+            _ => PauseReason::User,
+        }
+    }
     pub fn cancel(&self) {
         self.flag.store(CONTROL_CANCEL, Ordering::SeqCst);
     }
@@ -91,7 +126,7 @@ impl Control {
     /// `Ok(())` while running, otherwise the error the transfer should end with.
     fn check(&self) -> Result<()> {
         match self.flag.load(Ordering::Relaxed) {
-            CONTROL_PAUSE => Err(Error::Paused),
+            CONTROL_PAUSE | CONTROL_PARK => Err(Error::Paused),
             CONTROL_CANCEL => Err(Error::Cancelled),
             _ => Ok(()),
         }
@@ -1120,6 +1155,29 @@ mod tests {
         assert!(c.check().is_ok());
         c.cancel();
         assert!(matches!(c.check(), Err(Error::Cancelled)));
+    }
+
+    #[test]
+    fn parking_never_overrides_a_decision_already_made() {
+        // Shutdown parks everything still running. It must not rewrite a pause
+        // or a cancel the user asked for a moment earlier.
+        let c = Control::new();
+        c.pause();
+        c.park();
+        assert_eq!(c.pause_reason(), PauseReason::User);
+        assert!(matches!(c.check(), Err(Error::Paused)));
+
+        let c = Control::new();
+        c.cancel();
+        c.park();
+        assert!(matches!(c.check(), Err(Error::Cancelled)));
+
+        // A running transfer parks normally, and parking twice is idempotent.
+        let c = Control::new();
+        c.park();
+        c.park();
+        assert_eq!(c.pause_reason(), PauseReason::Parked);
+        assert!(matches!(c.check(), Err(Error::Paused)));
     }
 
     #[test]

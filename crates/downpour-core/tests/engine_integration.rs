@@ -719,6 +719,73 @@ async fn closing_a_window_pauses_scheduled_downloads_back_to_scheduled() {
 }
 
 #[tokio::test]
+async fn pausing_a_scheduled_download_inside_its_window_keeps_it_paused() {
+    // Pause All must stop a pinned download for good. Reporting it as
+    // `Scheduled` would hand it straight back to `promote_waiting`, which sees
+    // an open window and starts it again a tick later -- the user pressed pause
+    // and watched the bytes keep climbing.
+    let data = payload(16 * 1024 * 1024);
+    let server = common::start(data).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.speed_limit_bps = 2 * 1024 * 1024;
+    settings.pause_outside_window = true;
+    settings.schedule = Schedule {
+        enabled: true,
+        windows: vec![open_window()],
+    };
+    let engine = engine_with(settings);
+
+    let id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "pinned.bin",
+            StartMode::Schedule,
+        ))
+        .unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.downloaded_bytes).unwrap_or(0) > 512 * 1024
+        })
+        .await,
+        "download never started inside the open window"
+    );
+
+    engine.pause_all().unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(10), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Paused)
+        })
+        .await,
+        "a user pause left the download at {:?}, not Paused",
+        engine.get(&id).map(|i| i.status)
+    );
+
+    // Several pump ticks later it must still be paused, and no further bytes
+    // may have arrived.
+    let settled = engine.get(&id).unwrap().downloaded_bytes;
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    let item = engine.get(&id).unwrap();
+    assert_eq!(
+        item.status,
+        DownloadStatus::Paused,
+        "the scheduler restarted a download the user had paused"
+    );
+    assert_eq!(
+        item.downloaded_bytes, settled,
+        "a paused download kept transferring"
+    );
+}
+
+#[tokio::test]
 async fn an_unscheduled_download_ignores_a_closed_window() {
     let server = common::start(payload(256 * 1024)).await;
     let dir = TempDir::new();

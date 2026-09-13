@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pause All did not stop a pinned download.** A download gated by the
+  scheduler was reported as `Scheduled` whenever it stopped, on the assumption
+  that only a closing window ever stops one. When the user paused it, the
+  scheduler saw an item waiting for a window that was already open, promoted it
+  back into the queue on its next half-second tick and started it again -- so
+  Pause All appeared to do nothing and the file downloaded to completion. The
+  transfer now records *why* it stopped: a user pause always lands on `Paused`,
+  and only the engine's own parking -- a window closing, or the app shutting
+  down -- sends a scheduled item back to wait for its next window. Unpinned
+  downloads were never affected, which is why it looked intermittent.
+- **A download could start moments after being paused.** The queue pump chose
+  which item to start, released its lock, and then set the item running without
+  looking again. A pause landing in that gap was overwritten and the transfer
+  ran regardless. The pump now re-checks, under the lock that starts the
+  transfer, that the item is still queued, and a pause that crosses a start
+  signals the transfer it just missed.
 - **"Sleep when finished" could put the machine to sleep seconds after a
   download was started.** Three bugs stacked up. The drain report counted every
   `Completed` row in the list rather than the run that had just ended, so a
