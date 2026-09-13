@@ -63,10 +63,16 @@ export function MenuBar() {
   const settings = useApp((s) => s.settings);
 
   // Clicking anywhere else, or pressing Escape, closes the open menu.
+  //
+  // "Anywhere else" is anything outside the menu system itself — not merely
+  // outside the bar. The bar also holds the app mark, empty space and the icon
+  // buttons on the right, and a click on any of those used to leave the menu
+  // hanging open because the target was still technically inside the bar.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!barRef.current?.contains(e.target as Node)) setOpen(null);
+      const el = e.target as HTMLElement | null;
+      if (!el?.closest?.('[data-menu="root"]')) setOpen(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setOpen(null);
@@ -231,7 +237,13 @@ export function MenuBar() {
       ref={barRef}
       className="dp-panel relative z-30 flex h-9 shrink-0 items-center gap-0.5 border-t-0 border-r-0 border-l-0 px-2"
     >
-      <div className="mr-2 flex items-center gap-1.5 pl-1">
+      {/* Hovering the mark dismisses too: it is part of the bar but not part of
+          the menu system, and a menu left hanging over the window while the
+          pointer has clearly moved on is the thing that feels broken. */}
+      <div
+        className="mr-2 flex items-center gap-1.5 pl-1"
+        onMouseEnter={() => open && setOpen(null)}
+      >
         <DropletMark />
         <span className="text-[12px] font-semibold tracking-tight text-[var(--text-primary)]">
           Downpour
@@ -239,7 +251,9 @@ export function MenuBar() {
       </div>
 
       {Object.entries(menus).map(([name, entries]) => (
-        <div key={name} className="relative">
+        // The wrapper holds both the title and its dropdown, so one marker
+        // covers everything a click may legitimately land on while open.
+        <div key={name} data-menu="root" className="relative">
           <button
             type="button"
             onClick={() => setOpen(open === name ? null : name)}
@@ -291,12 +305,14 @@ export function MenuBar() {
         <BarButton
           label="What's new"
           icon={<Sparkles size={15} />}
+          onEnter={() => setOpen(null)}
           onClick={() => s().setWhatsNewOpen(true)}
         />
         <BarButton
           label="Settings"
           shortcut="Ctrl+,"
           icon={<Cog size={15} />}
+          onEnter={() => setOpen(null)}
           onClick={() => s().setSettingsOpen(true)}
         />
       </div>
@@ -316,17 +332,21 @@ function BarButton({
   shortcut,
   icon,
   onClick,
+  onEnter,
 }: {
   label: string;
   shortcut?: string;
   icon: ReactNode;
   onClick: () => void;
+  /** Fired on hover, so an open menu gets out of the way before the click. */
+  onEnter?: () => void;
 }) {
   return (
     <button
       type="button"
       aria-label={label}
       title={shortcut ? `${label} (${shortcut})` : label}
+      onMouseEnter={onEnter}
       onClick={onClick}
       className={clsx(
         "grid size-7 place-items-center rounded-[6px]",

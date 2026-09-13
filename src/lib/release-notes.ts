@@ -37,6 +37,17 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: "1.2.1",
+    date: "2026-09-13",
+    notes: [
+      {
+        title: "Menus close when you expect them to",
+        detail:
+          "Opening a menu and then clicking or moving elsewhere in the bar left it hanging open — including behind the Settings window.",
+      },
+    ],
+  },
+  {
     version: "1.2.0",
     date: "2026-09-13",
     summary: "Eleven themes, dates on your downloads, and settings one click away.",

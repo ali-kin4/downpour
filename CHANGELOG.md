@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-13
+
+### Fixed
+
+- **Menus now close when you click or hover away from them.** Dismissal was
+  tested against the whole menu bar, but the bar also carries the app mark,
+  empty space and the new icon buttons -- so a click on any of those counted as
+  "inside the menu" and left it hanging open. Clicking the settings gear with
+  Tools open put the dialog up behind a menu that was still on screen.
+
+  The test is now against the menu system itself rather than the bar. One rule
+  covers it: anything that is not a menu title or the open dropdown dismisses,
+  hovering another title switches, and hovering the mark or an icon button
+  closes. Wandering the pointer down into the download list still leaves a menu
+  open, which is what every desktop menu does -- moving through content on the
+  way back to another menu is normal, and closing on it feels twitchy.
+
 ## [1.2.0] - 2026-09-13
 
 ### Added
@@ -464,7 +481,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.1
 [1.2.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.0
 [1.1.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.0
