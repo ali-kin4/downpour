@@ -379,13 +379,26 @@ export function Dialog({
                 </p>
               )}
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
+            {/* Not the generic ghost Button: at `size="sm"` that is a 28px
+                square holding a 15px glyph in secondary text, which reads as a
+                stray character rather than a control. A dialog's close is the
+                one affordance every user reaches for blind, so it gets a real
+                32px circular target, a heavier stroke, and a hover state that
+                fills rather than merely tints. Focus is handled globally by the
+                :focus-visible outline. */}
+            <button
+              type="button"
               aria-label="Close"
               onClick={onClose}
-              icon={<X size={15} />}
-            />
+              className={clsx(
+                "-mt-0.5 -mr-1.5 grid size-8 shrink-0 place-items-center rounded-full",
+                "text-[var(--text-tertiary)] transition-colors duration-150",
+                "hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]",
+                "active:bg-[var(--surface-selected)]",
+              )}
+            >
+              <X size={16} strokeWidth={2.25} />
+            </button>
           </header>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>

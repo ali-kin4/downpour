@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Every dialog's close button is a real control.** It was the generic ghost
+  button at its small size: a 28px square holding a 15px glyph in secondary
+  text, which reads as a stray character someone left in the corner rather than
+  something to press. A dialog's close is the one affordance people reach for
+  without looking, so it is now a 32px circular target with a heavier stroke and
+  a hover state that fills rather than tints. Shared by every dialog in the app.
+
 ## [1.1.1] - 2026-09-13
 
 ### Changed
