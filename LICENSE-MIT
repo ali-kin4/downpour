@@ -1,12 +1,11 @@
-Downpour was released under the MIT Licence up to and including version 1.0.1,
-and the source published on the main branch up to and including commit caebb9f.
+Downpour was released under the MIT Licence up to and including version 1.0.1.
 
 Those versions remain available under these terms permanently. A licence already
 granted cannot be withdrawn: if you obtained Downpour 1.0.0 or 1.0.1, or cloned
 the repository while this was the licence in force, the terms below are yours to
 rely on for that code, and nothing in the current LICENSE changes them.
 
-Versions released after commit caebb9f are covered by LICENSE instead.
+Version 1.1.0 and every release after it are covered by LICENSE instead.
 
 ---------------------------------------------------------------------------
 

@@ -21,9 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   internet on your behalf should be auditable by the people trusting it. That is
   transparency, not a grant to reuse the code.
 
-  **This is not retroactive and cannot be.** Versions up to and including 1.0.1,
-  and the source published up to commit `caebb9f`, remain under the MIT Licence
-  permanently -- preserved verbatim in [`LICENSE-MIT`](LICENSE-MIT). A licence
+  **This is not retroactive and cannot be.** Versions up to and including 1.0.1
+  remain under the MIT Licence permanently -- preserved verbatim in
+  [`LICENSE-MIT`](LICENSE-MIT). A licence
   already granted cannot be withdrawn, and anyone holding that code keeps those
   rights. Third-party components keep their own licences, which this document
   neither restricts nor overrides.

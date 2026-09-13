@@ -87,9 +87,9 @@ terms. If you do not accept them, do not install or use it.
 5. EARLIER VERSIONS
 
    Downpour was released under the MIT Licence up to and including version
-   1.0.1, and the source published up to and including commit caebb9f. Those
-   versions stay under the MIT Licence permanently, and this document does not
-   and cannot apply retroactively to them. See LICENSE-MIT.
+   1.0.1. Those versions stay under the MIT Licence permanently, and this
+   document does not and cannot apply retroactively to them. Version 1.1.0 is
+   the first release covered by these terms. See LICENSE-MIT.
 
 
 6. OWNERSHIP
