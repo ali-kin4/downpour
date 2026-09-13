@@ -70,6 +70,7 @@ interface AppState {
   pasteOpen: boolean;
   settingsOpen: boolean;
   aboutOpen: boolean;
+  whatsNewOpen: boolean;
   /** Set when About was opened *to* check for updates, so it checks at once. */
   aboutCheckOnOpen: boolean;
   paletteOpen: boolean;
@@ -95,6 +96,7 @@ interface AppState {
   setPasteOpen: (v: boolean) => void;
   setSettingsOpen: (v: boolean) => void;
   setAboutOpen: (v: boolean) => void;
+  setWhatsNewOpen: (v: boolean) => void;
   openAboutForUpdates: () => void;
   clearAboutCheckOnOpen: () => void;
   setPaletteOpen: (v: boolean) => void;
@@ -136,6 +138,7 @@ export const useApp = create<AppState>((set, get) => ({
   pasteOpen: false,
   settingsOpen: false,
   aboutOpen: false,
+  whatsNewOpen: false,
   aboutCheckOnOpen: false,
   paletteOpen: false,
   toasts: [],
@@ -375,6 +378,7 @@ export const useApp = create<AppState>((set, get) => ({
   setPasteOpen: (pasteOpen) => set({ pasteOpen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setAboutOpen: (aboutOpen) => set({ aboutOpen }),
+  setWhatsNewOpen: (whatsNewOpen) => set({ whatsNewOpen }),
   openAboutForUpdates: () => set({ aboutOpen: true, aboutCheckOnOpen: true }),
   clearAboutCheckOnOpen: () => set({ aboutCheckOnOpen: false }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),

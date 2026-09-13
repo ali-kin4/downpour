@@ -27,6 +27,7 @@ import {
   Power,
   RefreshCw,
   Search,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -207,6 +208,11 @@ export function MenuBar() {
         run: () => void openUrl(REPO_URL),
       },
       sep,
+      {
+        label: "What's new",
+        icon: <Sparkles size={14} />,
+        run: () => s().setWhatsNewOpen(true),
+      },
       {
         label: "Check for updates…",
         icon: <ArrowUpCircle size={14} />,

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-09-13
+
+### Changed
+
+- **What's new has its own window.** It was a panel inside About, on the theory
+  that "which version am I on" and "what changed in it" are one question. They
+  are not: About is asked at any time and answers who made this and what you may
+  do with it; release notes are read once, just after an upgrade. Stacking them
+  turned a card into a page to scroll, which is what makes an About box feel
+  cheap. Reachable from Help -> What's new, and still shown automatically on the
+  first launch after an upgrade.
+- **The open-source component list left About** for
+  [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md), linked from About beside
+  the licence and trademark policy. The notices still have to travel with the
+  binary -- MIT, Apache-2.0 and ISC each require their copyright notice to
+  accompany distributions -- so they are published with every release rather
+  than dropped. `src/lib/acknowledgements.ts` is retired now that one file holds
+  those facts instead of two.
+
 ## [1.1.0] - 2026-09-13
 
 ### Changed
@@ -399,7 +418,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.0
 [1.0.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.0.1
 [1.0.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.0.0

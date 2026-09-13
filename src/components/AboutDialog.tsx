@@ -1,18 +1,15 @@
 /**
  * About, and what's new.
  *
- * One window rather than two, because the three things a person opens "About"
- * for — which version am I on, what changed in it, and is there a newer one —
- * are the same question asked three ways. Splitting them across an About box
- * and a separate release-notes window means answering none of them in one look.
+ * Identity, authorship, legal standing, and whether a newer version exists.
+ * Deliberately a card rather than a page: release notes live in their own
+ * window (see WhatsNewDialog) because "what is this" and "what changed in it"
+ * are asked at different moments, and stacking them here means scrolling an
+ * About box, which is what makes one feel cheap.
  *
  * The update check is manual and says so. Nothing here runs on a timer or at
  * launch: the button is the only thing that touches the network, and a check
  * that fails says it failed rather than quietly reading as "up to date".
- *
- * The what's-new list comes from `release-notes.ts` — the plain-language notes,
- * not `CHANGELOG.md`. Someone opening this window wants to know that Pause All
- * holds now, not which lock ordering changed.
  *
  * On the look of it: the accent gradient belongs to the product mark and to
  * nothing else in here. Running it through the author's name would conflate the
@@ -31,7 +28,6 @@
 import {
   ArrowUpRight,
   Check,
-  ChevronDown,
   ExternalLink,
   GitBranch,
   RefreshCw,
@@ -40,8 +36,6 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../lib/api";
-import { ACKNOWLEDGEMENTS } from "../lib/acknowledgements";
-import { RELEASES, notesFor } from "../lib/release-notes";
 import type { UpdateCheck } from "../lib/types";
 import { useApp } from "../store/app";
 import { Button, Dialog, Spinner } from "./ui";
@@ -70,9 +64,6 @@ export function AboutDialog() {
 
   const [version, setVersion] = useState<string | null>(null);
   const [check, setCheck] = useState<CheckState>({ phase: "idle" });
-  /** Which older release's notes are expanded, if any. */
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [creditsOpen, setCreditsOpen] = useState(false);
 
   const runCheck = useCallback(async () => {
     setCheck({ phase: "checking" });
@@ -88,8 +79,6 @@ export function AboutDialog() {
     // Reset on each open: a check from twenty minutes ago is not an answer to
     // "is there an update" now.
     setCheck({ phase: "idle" });
-    setExpanded(null);
-    setCreditsOpen(false);
     api
       .appVersion()
       .then(setVersion)
@@ -101,11 +90,6 @@ export function AboutDialog() {
       void runCheck();
     }
   }, [open, checkOnOpen, clearCheckOnOpen, runCheck]);
-
-  // The notes for the running version, falling back to the newest written set
-  // so a build whose version has no notes yet still shows something useful.
-  const current = (version ? notesFor(version) : undefined) ?? RELEASES[0];
-  const older = RELEASES.filter((r) => r.version !== current?.version);
 
   return (
     <Dialog
@@ -220,85 +204,6 @@ export function AboutDialog() {
         )}
       </div>
 
-      {/* -- What's new ---------------------------------------------------- */}
-      {current && (
-        <section className="mt-6">
-          <div className="mb-2.5 flex items-baseline justify-between gap-3">
-            <h3 className="text-[13px] font-semibold text-[var(--text-primary)]">
-              What's new in {current.version}
-            </h3>
-            {current.date && (
-              <span className="text-[11px] text-[var(--text-tertiary)] tabular-nums">
-                {current.date}
-              </span>
-            )}
-          </div>
-          {current.summary && (
-            <p className="mb-3 text-[11.5px] leading-snug text-[var(--text-tertiary)]">
-              {current.summary}
-            </p>
-          )}
-          <ul className="space-y-2.5">
-            {current.notes.map((n) => (
-              <li key={n.title} className="flex gap-2.5">
-                <Check
-                  size={13}
-                  className="mt-[3px] shrink-0 text-[var(--color-accent-from)]"
-                  aria-hidden
-                />
-                <div className="min-w-0">
-                  <p className="text-[12.5px] leading-snug font-medium text-[var(--text-primary)]">
-                    {n.title}
-                  </p>
-                  <p className="mt-0.5 text-[11.5px] leading-snug text-[var(--text-secondary)]">
-                    {n.detail}
-                  </p>
-                </div>
-              </li>
-            ))}
-          </ul>
-
-          {older.length > 0 && (
-            <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
-              {older.map((r) => {
-                const isOpen = expanded === r.version;
-                return (
-                  <div key={r.version}>
-                    <Disclosure
-                      open={isOpen}
-                      onToggle={() => setExpanded(isOpen ? null : r.version)}
-                    >
-                      <span className="font-medium tabular-nums">
-                        {r.version}
-                      </span>
-                      {r.date && (
-                        <span className="text-[var(--text-tertiary)]">
-                          · {r.date}
-                        </span>
-                      )}
-                    </Disclosure>
-                    {isOpen && (
-                      <ul className="mb-1 ml-[19px] space-y-1.5 border-l border-[var(--border-subtle)] pl-3">
-                        {r.notes.map((n) => (
-                          <li key={n.title}>
-                            <p className="text-[12px] leading-snug text-[var(--text-primary)]">
-                              {n.title}
-                            </p>
-                            <p className="text-[11px] leading-snug text-[var(--text-tertiary)]">
-                              {n.detail}
-                            </p>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </section>
-      )}
-
       {/* -- Legal --------------------------------------------------------- */}
       <section className="mt-6 border-t border-[var(--border-subtle)] pt-4">
         <div className="space-y-1 text-[11px] leading-relaxed text-[var(--text-tertiary)]">
@@ -327,50 +232,14 @@ export function AboutDialog() {
             label="Trademark policy"
             onClick={() => void openUrl(`${REPO_URL}/blob/main/TRADEMARK.md`)}
           />
+          <QuietLink
+            label="Third-party notices"
+            onClick={() =>
+              void openUrl(`${REPO_URL}/blob/main/THIRD-PARTY-NOTICES.md`)
+            }
+          />
         </div>
 
-        {/* -- Acknowledgements -------------------------------------------- */}
-        <div className="mt-3">
-          <Disclosure
-            open={creditsOpen}
-            onToggle={() => setCreditsOpen(!creditsOpen)}
-          >
-            <span className="font-medium">Open-source components</span>
-            <span className="text-[var(--text-tertiary)]">
-              · {ACKNOWLEDGEMENTS.length}
-            </span>
-          </Disclosure>
-
-          {creditsOpen && (
-            <ul className="mt-1 ml-[19px] divide-y divide-[var(--border-subtle)] border-l border-[var(--border-subtle)] pl-3">
-              {ACKNOWLEDGEMENTS.map((a) => (
-                <li
-                  key={a.name}
-                  className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5"
-                >
-                  <button
-                    type="button"
-                    onClick={() => void openUrl(a.url)}
-                    className="text-[12px] font-medium text-[var(--text-primary)] transition-colors duration-150 hover:text-[var(--color-accent-from)]"
-                  >
-                    {a.name}
-                  </button>
-                  <span className="text-[11px] text-[var(--text-tertiary)]">
-                    {a.license}
-                  </span>
-                  {a.bundled === false && (
-                    <span className="rounded-full border border-[var(--border-subtle)] px-1.5 text-[10px] text-[var(--text-tertiary)]">
-                      not bundled
-                    </span>
-                  )}
-                  <p className="w-full text-[11px] leading-snug text-[var(--text-tertiary)]">
-                    {a.role}
-                  </p>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
       </section>
     </Dialog>
   );
@@ -420,34 +289,6 @@ function CheckStatus({ state }: { state: CheckState }) {
       <Check size={12} className="shrink-0 text-[var(--status-completed)]" aria-hidden />
       This is the newest release.
     </span>
-  );
-}
-
-/** A chevron row that expands something. Shared so the two lists in here open
- *  and close identically. */
-function Disclosure({
-  open,
-  onToggle,
-  children,
-}: {
-  open: boolean;
-  onToggle: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={open}
-      className="flex w-full items-center gap-1.5 rounded-[6px] py-1.5 text-[12px] text-[var(--text-secondary)] transition-colors duration-150 hover:text-[var(--text-primary)]"
-    >
-      <ChevronDown
-        size={13}
-        className={`shrink-0 transition-transform duration-150 ${open ? "" : "-rotate-90"}`}
-        aria-hidden
-      />
-      {children}
-    </button>
   );
 }
 

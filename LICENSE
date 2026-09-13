@@ -75,8 +75,8 @@ terms. If you do not accept them, do not install or use it.
    The Software is built on open-source components that remain under their own
    licences. Those licences govern those components, and nothing in this
    document restricts, reduces or overrides any right they grant you. The
-   principal components and their licences are listed in the Software's About
-   window and in src/lib/acknowledgements.ts.
+   principal components and their licences are listed in THIRD-PARTY-NOTICES.md,
+   published with every release and linked from the Software's About window.
 
    Some functionality relies on software that Downpour downloads from its own
    publisher at your request rather than distributing — yt-dlp is one. Such

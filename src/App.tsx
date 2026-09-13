@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { AboutDialog } from "./components/AboutDialog";
+import { WhatsNewDialog } from "./components/WhatsNewDialog";
 import { AddDialog } from "./components/AddDialog";
 import { CommandPalette } from "./components/CommandPalette";
 import { CompletionDialog } from "./components/CompletionDialog";
@@ -61,7 +62,7 @@ export function App() {
           return;
         }
         if (seen && seen !== version && notesFor(version)) {
-          useApp.getState().setAboutOpen(true);
+          useApp.getState().setWhatsNewOpen(true);
         }
       })
       .catch(() => {
@@ -163,6 +164,7 @@ export function App() {
       </div>
 
       <AboutDialog />
+      <WhatsNewDialog />
       <AddDialog />
       <PasteDialog />
       <SettingsDialog />

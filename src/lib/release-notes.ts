@@ -37,6 +37,17 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: "1.1.1",
+    date: "2026-09-13",
+    notes: [
+      {
+        title: "What's new has its own window",
+        detail:
+          "It used to be buried in About. About now says what Downpour is, who made it and what you may do with it — and this window tells you what changed. Find it again under Help.",
+      },
+    ],
+  },
+  {
     version: "1.1.0",
     date: "2026-09-13",
     summary: "Two pauses that did not hold, and a window that tells you what you are running.",
