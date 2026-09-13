@@ -13,6 +13,12 @@
  *
  * `title` is the headline a user scans; `detail` is the one sentence that says
  * what it means for them. No internals in either.
+ *
+ * The invariant: **every version bump adds an entry here.** The About window
+ * falls back to the newest written release when the running version has none,
+ * so a forgotten entry does not break anything -- it quietly shows the previous
+ * release's notes beside the new version number, which is worse than an error
+ * because nobody notices it.
  */
 
 export interface ReleaseNote {
