@@ -202,6 +202,9 @@ export const useColumns = create<ColumnState>((set, get) => ({
     };
     set(next);
     persist(next);
+    // Showing a column widens the grid without changing the header's own
+    // width, so no ResizeObserver tick is coming to make room for it.
+    get().fitToContainer(get().containerPx);
   },
 
   resize(id, px) {
@@ -265,7 +268,11 @@ export const useColumns = create<ColumnState>((set, get) => ({
       name = widths.name - fromName;
       over -= fromName;
       if (over > 0 && hasProgress) {
-        progress = Math.max(PROGRESS_MIN, progress - over);
+        // The column's hard minimum, not the comfortable one used by the
+        // auto-split: on a forced shrink that difference is what decides
+        // whether the grid fits at all.
+        const floor = COLUMNS.find((c) => c.id === "progress")?.min ?? PROGRESS_MIN;
+        progress = Math.max(floor, progress - over);
       }
     } else {
       // Split the free space between Name and Progress rather than handing it
