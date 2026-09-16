@@ -2,10 +2,10 @@
  * The sortable, resizable column header.
  *
  * Every edge is a drag handle: drag to resize, double-click to fit the column
- * to its widest visible value. The hit area is 9px wide; the rule inside it is
- * 1px and the full height of the header, so a boundary looks like a boundary.
- * An unpainted edge kept the header clean but left both gestures
- * undiscoverable — nobody drags an edge they cannot see.
+ * to its widest visible value. The hit area is 9px wide and spans the header's
+ * full height; the rule inside it is 1px and half that, centred. An unpainted
+ * edge kept the header clean but left both gestures undiscoverable — nobody
+ * drags an edge they cannot see.
  *
  * The rule stays grey throughout, including mid-drag. It is a division between
  * columns, not a status: coloured in the accent and tracking the pointer, it
@@ -160,7 +160,7 @@ export function ColumnHeader({
       />
 
       {shown.map((c) => (
-        <div key={c.id} className="relative min-w-0">
+        <div key={c.id} className="relative flex min-w-0 items-center self-stretch">
           <button
             type="button"
             disabled={!c.sortable}
@@ -182,8 +182,12 @@ export function ColumnHeader({
           </button>
 
           {/* Resize handle. Sits half outside the cell so it straddles the gap
-              and both neighbours feel grabbable. The rule is full height at
-              rest so the boundary reads as a boundary. */}
+              and both neighbours feel grabbable.
+
+              `inset-y-0` rather than a fixed height: the cell stretches to the
+              header, so the hit area matches it exactly and the rule centres
+              itself inside. Measured in `h-8` from the cell's own top it hung
+              8px into the first row, because the cell starts below the header. */}
           <div
             role="separator"
             aria-orientation="vertical"
@@ -194,11 +198,11 @@ export function ColumnHeader({
               fit(c.id);
             }}
             title="Drag to resize · double-click to fit"
-            className="group absolute top-0 -right-[10px] z-10 flex h-8 w-[9px] cursor-col-resize items-center justify-center"
+            className="group absolute inset-y-0 -right-[10px] z-10 flex w-[9px] cursor-col-resize items-center justify-center"
           >
             <span
               className={clsx(
-                "h-8 w-px transition-colors duration-100",
+                "h-4 w-px transition-colors duration-100",
                 dragging === c.id
                   ? "bg-[var(--text-tertiary)]"
                   : "bg-[var(--border-strong)] group-hover:bg-[var(--text-tertiary)]",
