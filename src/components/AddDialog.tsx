@@ -32,6 +32,8 @@ const PROBE_DEBOUNCE_MS = 550;
 
 export function AddDialog() {
   const open = useApp((s) => s.addOpen);
+  const pending = useApp((s) => s.pendingAdd);
+  const setPendingAdd = useApp((s) => s.setPendingAdd);
   const setOpen = useApp((s) => s.setAddOpen);
   const settings = useApp((s) => s.settings);
   const run = useApp((s) => s.run);
@@ -45,6 +47,11 @@ export function AddDialog() {
   const [headersText, setHeadersText] = useState("");
   const [checksum, setChecksum] = useState("");
   const [advanced, setAdvanced] = useState(false);
+
+  const close = () => {
+    setPendingAdd(null);
+    setOpen(false);
+  };
 
   const [duplicate, setDuplicate] = useState<api.DuplicateInfo | null>(null);
   const [dismissedDuplicate, setDismissedDuplicate] = useState(false);
@@ -71,6 +78,21 @@ export function AddDialog() {
     setDuplicate(null);
     setDismissedDuplicate(false);
 
+    // A download the browser handed over already knows everything the
+    // clipboard could have guessed at, and carries the session that makes it
+    // work. Reading the clipboard over the top of it would be worse than
+    // useless -- it would replace the URL that is actually being asked about.
+    if (pending) {
+      setUrl(pending.url);
+      if (pending.filename) setFilename(pending.filename);
+      if (pending.destDir) setDestDir(pending.destDir);
+      const headers = Object.entries(pending.headers);
+      if (headers.length > 0) {
+        setHeadersText(headers.map(([k, v]) => `${k}: ${v}`).join("\n"));
+      }
+      return;
+    }
+
     void readText().then(
       (text) => {
         const candidate = text?.trim() ?? "";
@@ -78,7 +100,7 @@ export function AddDialog() {
       },
       () => undefined,
     );
-  }, [open, settings?.downloadDir, settings?.scheduleNewDownloads]);
+  }, [open, pending, settings?.downloadDir, settings?.scheduleNewDownloads]);
 
   // Debounced probe. The request id guards against an older, slower probe
   // landing after a newer one and overwriting the correct preview.
@@ -137,7 +159,7 @@ export function AddDialog() {
         tone: "success",
         title: startMode === "start" ? "Download started" : "Added to the list",
       });
-      setOpen(false);
+      close();
     });
     setSubmitting(false);
   };
@@ -145,13 +167,13 @@ export function AddDialog() {
   return (
     <Dialog
       open={open}
-      onClose={() => setOpen(false)}
+      onClose={close}
       title="New download"
       subtitle="Paste a link. Downpour checks it before adding."
       width={580}
       footer={
         <>
-          <Button onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={close}>Cancel</Button>
           <Button
             variant="primary"
             disabled={!valid || submitting}

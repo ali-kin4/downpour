@@ -152,6 +152,7 @@ const settings: Settings = {
   // generated per install and never leaves the user's local database.
   rpcToken: DEV_FAKE_TOKEN,
   rpcEnabled: true,
+  extensionConfirmDownloads: true,
   userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0.0.0",
   theme: "system",
   accent: "aurora",

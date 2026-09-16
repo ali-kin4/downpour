@@ -31,6 +31,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// A download the browser handed over that is waiting to be confirmed.
+///
+/// Emitted instead of queueing when the user has asked to be consulted. The
+/// whole payload travels to the window -- headers included -- because the
+/// answer has to be able to start the *same* download, cookies and all, and a
+/// second fetch of the URL from the app would arrive without the browser's
+/// session.
+pub const CONFIRM_EVENT: &str = "downpour://confirm-download";
+
 /// Bodies larger than this are refused. Cookie headers get long and batches get
 /// big, but nothing legitimate approaches a quarter of a megabyte.
 const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -207,6 +216,17 @@ struct Health {
     ok: bool,
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PendingDownload {
+    url: String,
+    headers: BTreeMap<String, String>,
+    filename: Option<String>,
+    dest_dir: Option<PathBuf>,
+    size_hint: Option<u64>,
+    source: Option<String>,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CaptureSettings {
@@ -234,7 +254,7 @@ struct AddItem {
     // Accepted and ignored: display-only hints from the browser. Declaring
     // them keeps a well-formed request from being rejected as malformed.
     #[serde(default, rename = "sizeHint")]
-    _size_hint: Option<u64>,
+    size_hint: Option<u64>,
     #[serde(default, rename = "pageTitle")]
     _page_title: Option<String>,
 }
@@ -312,6 +332,18 @@ async fn health() -> Json<Health> {
     })
 }
 
+/// Whether this hand-off should be put to the user rather than simply queued.
+///
+/// A click the extension intercepted is the one hand-off the user has not
+/// actually agreed to -- they clicked a link, not a download button in
+/// Downpour. Every other source is already an explicit choice: the context
+/// menu, the video overlay and the link grabber all mean "download this", and
+/// asking again would be a dialog in the way of an answered question. That is
+/// why this keys on the source and not on the endpoint, which they all share.
+fn should_confirm(source: Option<&str>, mode: StartMode, enabled: bool) -> bool {
+    enabled && mode == StartMode::Start && source == Some("extension")
+}
+
 async fn capture_settings(State(state): State<RpcState>) -> Json<CaptureSettings> {
     let s = state.engine.settings();
     Json(CaptureSettings {
@@ -354,6 +386,44 @@ async fn add_one(
         )
             .into_response());
     }
+    if should_confirm(
+        item.source.as_deref(),
+        item.start_mode,
+        state.engine.settings().extension_confirm_downloads,
+    ) {
+        use tauri::{Emitter, Manager};
+        if let Some(w) = state.app.get_webview_window("main") {
+            let _ = w.show();
+            let _ = w.unminimize();
+            let _ = w.set_focus();
+        }
+        let filename = item.filename.clone().unwrap_or_default();
+        let _ = state.app.emit(
+            CONFIRM_EVENT,
+            PendingDownload {
+                url: item.url,
+                headers: item.headers,
+                filename: item.filename,
+                dest_dir: item.dest_dir,
+                size_hint: item.size_hint,
+                source: item.source,
+            },
+        );
+        // 202 rather than 201: nothing was created. The extension still takes
+        // Chrome's copy away on any 2xx, which is what we want -- the download
+        // is Downpour's to run or to drop now, and a duplicate arriving in the
+        // browser's folder because the user was still reading the dialog is
+        // the one outcome nobody wants.
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(AddedOne {
+                id: String::new(),
+                filename,
+                status: "awaiting_confirmation".into(),
+            }),
+        ));
+    }
+
     let id = state
         .engine
         .add(item.into())
@@ -583,6 +653,35 @@ type Shared = Arc<RpcState>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_intercepted_click_is_put_to_the_user() {
+        let on = |source, mode| should_confirm(source, mode, true);
+
+        assert!(on(Some("extension"), StartMode::Start));
+
+        // Deliberate choices. The user has already said to download these.
+        assert!(!on(Some("extension-context-menu"), StartMode::Start));
+        assert!(!on(Some("extension-video-overlay"), StartMode::Start));
+        assert!(!on(Some("extension-link-grabber"), StartMode::Start));
+        assert!(!on(Some("extension-page-links"), StartMode::Start));
+
+        // A prefix match would have caught every one of those, so guard it.
+        assert!(!on(Some("extensionsomething"), StartMode::Start));
+        assert!(!on(None, StartMode::Start));
+
+        // Queued without starting, or held for the scheduler: nothing is about
+        // to happen, so there is nothing to interrupt the user about.
+        assert!(!on(Some("extension"), StartMode::AddOnly));
+        assert!(!on(Some("extension"), StartMode::Schedule));
+
+        // Switched off, the intercepted click just starts, as it used to.
+        assert!(!should_confirm(
+            Some("extension"),
+            StartMode::Start,
+            false
+        ));
+    }
 
     #[test]
     fn constant_time_eq_matches_only_identical_input() {

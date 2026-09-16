@@ -152,6 +152,31 @@ export async function onClipboardCapture(
   return listen<ClipboardCapture>("downpour://clipboard", (e) => handler(e.payload));
 }
 
+// -- Browser hand-off -------------------------------------------------------
+
+/**
+ * A download the browser intercepted, waiting to be confirmed.
+ *
+ * Carries the headers with it. The browser's cookies are the reason a
+ * session-gated file arrives as the file, and re-fetching the URL from the app
+ * after the user says yes would arrive without them.
+ */
+export interface PendingDownload {
+  url: string;
+  headers: Record<string, string>;
+  filename: string | null;
+  destDir: string | null;
+  sizeHint: number | null;
+  source: string | null;
+}
+
+export async function onConfirmDownload(
+  handler: (pending: PendingDownload) => void,
+): Promise<UnlistenFn> {
+  if (!inTauri()) return () => {};
+  return listen<PendingDownload>("downpour://confirm-download", (e) => handler(e.payload));
+}
+
 // -- Duplicates -------------------------------------------------------------
 
 export interface DuplicateInfo {

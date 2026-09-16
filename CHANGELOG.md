@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-16
+
+### Added
+
+- **Downloads from the browser can ask first.** Clicking a download in the
+  browser now opens Downpour's add dialog already filled in -- filename,
+  folder, size and the browser's own session -- instead of starting straight
+  away. Answer it and the download begins with exactly the session the browser
+  would have used; dismiss it and nothing is queued.
+
+  Only the click the extension intercepts is put to you. Links you send
+  deliberately -- the right-click menu, the button over a video, the link
+  grabber -- are already an explicit choice, and a dialog in front of an
+  answered question is just a dialog in the way.
+
+  On by default, and switched off under **Settings -> Browser integration ->
+  Ask before starting a download from the browser**, which restores the older
+  behaviour of starting immediately.
+
+### Fixed
+
+- **The extension reports its real version.** Its manifest read `0.1.0` in
+  every release regardless of the version the release was named after, so the
+  version shown in the browser's extensions page told you nothing about which
+  build you had. The release now stamps it from the tag, and the two cannot
+  drift apart again.
+
 ## [1.2.2] - 2026-09-16
 
 Carries the 1.2.1 fix below as well: 1.2.1 was prepared but never published, so
@@ -509,7 +536,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.0
 [1.2.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.2
 [1.2.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.0
 [1.1.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.1

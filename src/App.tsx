@@ -126,6 +126,7 @@ export function App() {
   }, [refreshStats]);
 
   useClipboardCapture();
+  useBrowserHandoff();
   useGlobalShortcuts();
 
   if (!ready) {
@@ -183,6 +184,38 @@ export function App() {
  * an app that starts downloading things because you copied a URL, without
  * asking once, is an app people uninstall.
  */
+/**
+ * A download the browser intercepted, asked about rather than just started.
+ *
+ * The app has already raised its window by the time this arrives; all that is
+ * left is to put the dialog up with the hand-off in it, so a click in the
+ * browser turns into a question with an answer of Start or Cancel.
+ */
+function useBrowserHandoff() {
+  const setPendingAdd = useApp((s) => s.setPendingAdd);
+  const setAddOpen = useApp((s) => s.setAddOpen);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    void api
+      .onConfirmDownload((pending) => {
+        setPendingAdd(pending);
+        setAddOpen(true);
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [setPendingAdd, setAddOpen]);
+}
+
 function useClipboardCapture() {
   const toast = useApp((s) => s.toast);
   const run = useApp((s) => s.run);

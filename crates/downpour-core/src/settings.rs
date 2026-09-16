@@ -180,6 +180,14 @@ pub struct Settings {
     /// Shared secret the extension must present. Regenerated on demand.
     pub rpc_token: String,
     pub rpc_enabled: bool,
+    /// Ask before a download handed over by the browser starts.
+    ///
+    /// On, the extension hands the link across without queueing it and the app
+    /// opens its add dialog already filled in, so a click in the browser is a
+    /// question rather than a decision already taken. Off, the download simply
+    /// starts, which is the older behaviour and what someone batching hundreds
+    /// of files wants.
+    pub extension_confirm_downloads: bool,
 
     // --- Application ------------------------------------------------------
     pub user_agent: String,
@@ -233,6 +241,10 @@ impl std::fmt::Debug for Settings {
             .field("clipboard_auto_add", &self.clipboard_auto_add)
             .field("rpc_port", &self.rpc_port)
             .field("rpc_enabled", &self.rpc_enabled)
+            .field(
+                "extension_confirm_downloads",
+                &self.extension_confirm_downloads,
+            )
             .field("rpc_token", &"<redacted>")
             .field("user_agent", &self.user_agent)
             .field("theme", &self.theme)
@@ -271,6 +283,7 @@ impl Default for Settings {
             clipboard_auto_add: false,
             rpc_port: 47_113,
             rpc_token: generate_token(),
+            extension_confirm_downloads: true,
             rpc_enabled: true,
             user_agent: DEFAULT_USER_AGENT.to_string(),
             theme: "system".to_string(),

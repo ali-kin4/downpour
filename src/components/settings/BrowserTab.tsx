@@ -95,6 +95,19 @@ export function BrowserTab({ settings }: { settings: Settings }) {
         </Row>
       </Setting>
 
+      <Setting id="browser.extension.confirm">
+        <Row
+          label="Ask before starting a download from the browser"
+          hint="Clicking a download in the browser opens Downpour's add dialog, already filled in, instead of starting straight away. Links you send deliberately -- the right-click menu, the video button, the link grabber -- are never held up by this."
+        >
+          <Switch
+            checked={settings.extensionConfirmDownloads}
+            label="Ask before starting a download from the browser"
+            onChange={(v) => void patch({ extensionConfirmDownloads: v })}
+          />
+        </Row>
+      </Setting>
+
       <Setting id="browser.extension.status">
         <div className="py-2.5">
           <div className="flex items-center gap-2">

@@ -74,6 +74,8 @@ interface AppState {
    */
   justFinished: DownloadItem | null;
   addOpen: boolean;
+  /** A browser hand-off waiting for an answer, pre-filling the add dialog. */
+  pendingAdd: api.PendingDownload | null;
   pasteOpen: boolean;
   settingsOpen: boolean;
   aboutOpen: boolean;
@@ -100,6 +102,7 @@ interface AppState {
   clearSelection: () => void;
 
   setAddOpen: (v: boolean) => void;
+  setPendingAdd: (v: api.PendingDownload | null) => void;
   setPasteOpen: (v: boolean) => void;
   setSettingsOpen: (v: boolean) => void;
   setAboutOpen: (v: boolean) => void;
@@ -142,6 +145,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   justFinished: null,
   addOpen: false,
+  pendingAdd: null,
   pasteOpen: false,
   settingsOpen: false,
   aboutOpen: false,
@@ -382,6 +386,7 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   setAddOpen: (addOpen) => set({ addOpen }),
+  setPendingAdd: (pendingAdd) => set({ pendingAdd }),
   setPasteOpen: (pasteOpen) => set({ pasteOpen }),
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   setAboutOpen: (aboutOpen) => set({ aboutOpen }),

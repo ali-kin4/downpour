@@ -143,6 +143,7 @@ export interface Settings {
   rpcPort: number;
   rpcToken: string;
   rpcEnabled: boolean;
+  extensionConfirmDownloads: boolean;
 
   userAgent: string;
   theme: string;

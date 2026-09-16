@@ -61,6 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
+          export EXT_VERSION="$version"
           mkdir -p release
           if [ ! -f extension/manifest.json ]; then
             echo "::error::extension/manifest.json is missing"
@@ -69,6 +70,19 @@ jobs:
           # Validate before packaging: a release containing an extension Chrome
           # refuses to load is worse than one with no extension at all.
           node -e "JSON.parse(require('fs').readFileSync('extension/manifest.json','utf8'))"
+          # Stamp the tag's version into the manifest before zipping. The zip
+          # was already named from the tag, so without this the file said one
+          # version and the manifest Chrome reads said another -- and the one
+          # users can actually see is the manifest.
+          node -e "
+            const fs = require('fs');
+            const p = 'extension/manifest.json';
+            const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+            m.version = process.env.EXT_VERSION;
+            fs.writeFileSync(p, JSON.stringify(m, null, 2) + '
+');
+            console.log('extension manifest stamped ' + m.version);
+          "
           for f in extension/*.js; do node --check "$f"; done
           # README.md is included deliberately: it is the load-unpacked and
           # pairing guide, and it is the first thing someone opening this zip
