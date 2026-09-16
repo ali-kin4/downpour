@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-09-16
+
+### Fixed
+
+- **The row menu no longer drags the table sideways.** Opening a row's `...`
+  menu -- or right-clicking a row -- pushed the menu outside the list, which
+  grew a horizontal scrollbar and shifted every column, cutting the filenames
+  off mid-word. The menu now opens where it was asked for and the table stays
+  where it is.
+
+- **Column edges can be found.** Dragging an edge to resize and double-clicking
+  one to fit the column to its contents both worked already, but nothing was
+  drawn to say so: the divider appeared only once the pointer was already on
+  top of it. Each boundary now carries a visible rule, centred in the header.
+
+- **Columns can no longer be dragged wider than the window.** The headings sit
+  above the list rather than inside it, so a grid wider than the window scrolled
+  the rows out from under their own headings. Widths are now held to the space
+  available, and given back when the window shrinks under a layout you have
+  sized by hand.
+
+- **Switching on Finished or Source keeps the layout intact.** Showing an
+  optional column widened the grid without anything making room for it, which
+  produced the same drift as above.
+
 ## [1.2.1] - 2026-09-13
 
 ### Fixed
