@@ -2,10 +2,14 @@
  * The sortable, resizable column header.
  *
  * Every edge is a drag handle: drag to resize, double-click to fit the column
- * to its widest visible value. The hit area is 9px wide and the rule inside it
- * 1px, painted faintly at rest and darkening under the pointer. An unpainted
- * edge kept the header clean but left both gestures undiscoverable — nobody
- * drags an edge they cannot see.
+ * to its widest visible value. The hit area is 9px wide; the rule inside it is
+ * 1px and the full height of the header, so a boundary looks like a boundary.
+ * An unpainted edge kept the header clean but left both gestures
+ * undiscoverable — nobody drags an edge they cannot see.
+ *
+ * The rule stays grey throughout, including mid-drag. It is a division between
+ * columns, not a status: coloured in the accent and tracking the pointer, it
+ * read as a stray cursor rather than as the edge it is.
  */
 
 import clsx from "clsx";
@@ -24,7 +28,6 @@ import {
   COLUMNS,
   visibleColumns,
   COLUMN_GAP,
-  GUTTER_LEAD,
   GUTTER_TRAIL,
   gridTemplate,
   measureText,
@@ -195,10 +198,10 @@ export function ColumnHeader({
           >
             <span
               className={clsx(
-                "w-px transition-all duration-100",
+                "h-8 w-px transition-colors duration-100",
                 dragging === c.id
-                  ? "h-8 bg-[var(--accent)]"
-                  : "h-4 bg-[var(--border-strong)] group-hover:h-8 group-hover:bg-[var(--accent)]",
+                  ? "bg-[var(--text-tertiary)]"
+                  : "bg-[var(--border-strong)] group-hover:bg-[var(--text-tertiary)]",
               )}
             />
           </div>
@@ -206,15 +209,6 @@ export function ColumnHeader({
       ))}
 
       <span />
-
-      {dragging && (
-        // A full-height rule while dragging, so the new boundary is visible
-        // against the rows rather than only in the header.
-        <div
-          className="pointer-events-none fixed inset-y-0 w-px bg-[var(--accent)] opacity-60"
-          style={{ left: dragGuideX(ref.current, widths, dragging, hidden) }}
-        />
-      )}
 
       {menu && (
         <ColumnMenu
@@ -304,24 +298,6 @@ function ColumnMenu({
       })}
     </div>
   );
-}
-
-/** Screen x of the right edge of the column being dragged. */
-function dragGuideX(
-  el: HTMLElement | null,
-  widths: Record<ColumnId, number>,
-  id: ColumnId,
-  hidden: ColumnId[],
-): number {
-  if (!el) return -1;
-  const rect = el.getBoundingClientRect();
-  let x = rect.left + 12 + GUTTER_LEAD + COLUMN_GAP;
-  for (const c of visibleColumns(hidden)) {
-    x += widths[c.id];
-    if (c.id === id) return x + COLUMN_GAP / 2;
-    x += COLUMN_GAP;
-  }
-  return x;
 }
 
 /** The text a cell renders, used only for auto-fit measurement. */
