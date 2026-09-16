@@ -24,6 +24,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import * as api from "../lib/api";
 import { FileTile } from "../lib/filetypes";
@@ -251,9 +252,16 @@ export function DownloadRow({ id }: { id: string }) {
         </div>
       </div>
 
-      {menuAt && (
-        <RowMenu item={item} at={menuAt} onClose={() => setMenuAt(null)} />
-      )}
+      {/* Portalled to the body. The virtualiser positions rows with a
+          `transform`, and a transformed ancestor becomes the containing block
+          for `position: fixed` -- so a menu rendered here would read its
+          viewport coordinates as row-relative ones, land outside the scroll
+          area, and drag a horizontal scrollbar across the whole table. */}
+      {menuAt &&
+        createPortal(
+          <RowMenu item={item} at={menuAt} onClose={() => setMenuAt(null)} />,
+          document.body,
+        )}
     </>
   );
 }
@@ -391,6 +399,10 @@ function RowMenu({
   const toast = useApp((s) => s.toast);
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState(at);
+  // The flip below needs the menu's own size, so it can only run after a first
+  // paint. Held hidden until then rather than letting it flash at the
+  // unflipped position -- which, on the rightmost rows, is off screen.
+  const [placed, setPlaced] = useState(false);
 
   // Flip the menu back inside the window when opened near an edge.
   useEffect(() => {
@@ -401,6 +413,7 @@ function RowMenu({
       x: at.x + r.width > window.innerWidth ? Math.max(4, at.x - r.width) : at.x,
       y: at.y + r.height > window.innerHeight ? Math.max(4, at.y - r.height) : at.y,
     });
+    setPlaced(true);
   }, [at.x, at.y]);
 
   useEffect(() => {
@@ -427,7 +440,7 @@ function RowMenu({
     <div
       ref={ref}
       role="menu"
-      style={{ left: pos.x, top: pos.y }}
+      style={{ left: pos.x, top: pos.y, visibility: placed ? undefined : "hidden" }}
       className="dp-enter fixed z-50 min-w-[214px] overflow-hidden rounded-[var(--radius-card)] border border-[var(--border-subtle)] bg-[var(--surface-raised)] py-1 shadow-[var(--shadow-overlay)]"
     >
       {item.status === "completed" && (

@@ -129,7 +129,35 @@ function persist(state: Stored) {
   }
 }
 
+/** Total width the grid needs: both gutters, every visible column, the gaps. */
+function layoutWidth(widths: Widths, hidden: ColumnId[]): number {
+  const cols = visibleColumns(hidden);
+  const sum = cols.reduce((total, c) => total + widths[c.id], 0);
+  return GUTTER_LEAD + GUTTER_TRAIL + sum + COLUMN_GAP * (cols.length + 1);
+}
+
+/**
+ * Clamps a column to its minimum and to whatever room the container has left.
+ *
+ * The header sits above the scroll area rather than inside it, so a grid wider
+ * than the container would scroll the rows out from under their own headings.
+ * A drag simply stops at the right edge instead.
+ */
+function clampWidth(
+  id: ColumnId,
+  px: number,
+  state: { widths: Widths; hidden: ColumnId[]; containerPx: number },
+): number {
+  const min = COLUMNS.find((c) => c.id === id)?.min ?? 60;
+  const rest = layoutWidth(state.widths, state.hidden) - state.widths[id];
+  const max =
+    state.containerPx > 0 ? Math.max(min, state.containerPx - rest) : Infinity;
+  return Math.round(clamp(px, min, max));
+}
+
 interface ColumnState extends Stored {
+  /** Content width of the header, from its ResizeObserver. 0 until measured. */
+  containerPx: number;
   setWidth: (id: ColumnId, px: number) => void;
   /** Called while dragging; does not mark Name as manual until the drag ends. */
   resize: (id: ColumnId, px: number) => void;
@@ -146,14 +174,15 @@ const initial = load();
 
 export const useColumns = create<ColumnState>((set, get) => ({
   ...initial,
+  containerPx: 0,
 
   setWidth(id, px) {
-    const min = COLUMNS.find((c) => c.id === id)?.min ?? 60;
-    const widths = { ...get().widths, [id]: Math.max(min, Math.round(px)) };
+    const state = get();
+    const widths = { ...state.widths, [id]: clampWidth(id, px, state) };
     const next = {
       widths,
-      nameManual: id === "name" ? true : get().nameManual,
-      hidden: get().hidden,
+      nameManual: id === "name" ? true : state.nameManual,
+      hidden: state.hidden,
     };
     set(next);
     persist(next);
@@ -176,8 +205,8 @@ export const useColumns = create<ColumnState>((set, get) => ({
   },
 
   resize(id, px) {
-    const min = COLUMNS.find((c) => c.id === id)?.min ?? 60;
-    set({ widths: { ...get().widths, [id]: Math.max(min, Math.round(px)) } });
+    const state = get();
+    set({ widths: { ...state.widths, [id]: clampWidth(id, px, state) } });
   },
 
   endResize(id) {
@@ -191,40 +220,68 @@ export const useColumns = create<ColumnState>((set, get) => ({
   },
 
   autoFit(id, contentPx) {
-    const min = COLUMNS.find((c) => c.id === id)?.min ?? 60;
+    const current = get();
     // A little breathing room on the right, and a ceiling so one absurd
     // filename cannot push every other column off the screen.
-    const px = Math.min(900, Math.max(min, Math.round(contentPx) + 24));
+    const px = clampWidth(id, Math.min(900, Math.round(contentPx) + 24), current);
     const state = {
-      widths: { ...get().widths, [id]: px },
-      nameManual: id === "name" ? true : get().nameManual,
-      hidden: get().hidden,
+      widths: { ...current.widths, [id]: px },
+      nameManual: id === "name" ? true : current.nameManual,
+      hidden: current.hidden,
     };
     set(state);
     persist(state);
   },
 
   fitToContainer(containerPx) {
-    if (get().nameManual) return;
-    const { widths } = get();
-    const fixed = COLUMNS.filter((c) => c.id !== "name" && c.id !== "progress").reduce(
-      (sum, c) => sum + widths[c.id],
-      0,
-    );
-    const gaps = COLUMN_GAP * (COLUMNS.length + 1);
+    if (containerPx <= 0) return;
+    const { widths, hidden, nameManual, containerPx: known } = get();
+    // Remembered so a resize drag knows where the right edge is.
+    if (known !== containerPx) set({ containerPx });
+
+    const cols = visibleColumns(hidden);
+    const hasProgress = cols.some((c) => c.id === "progress");
+    // Only what is on screen: reserving room for a hidden column would leave a
+    // dead gutter on the right.
+    const fixed = cols
+      .filter((c) => c.id !== "name" && c.id !== "progress")
+      .reduce((sum, c) => sum + widths[c.id], 0);
+    const gaps = COLUMN_GAP * (cols.length + 1);
     const slack = containerPx - GUTTER_LEAD - GUTTER_TRAIL - fixed - gaps;
     if (slack <= 0) return;
 
-    // Split the free space between Name and Progress rather than handing it
-    // all to Name. On a wide window an 1100px filename column next to a
-    // 190px progress bar looks broken, and the bar is the thing people watch.
-    const name = clamp(slack * 0.62, COLUMNS[0].min, NAME_COMFORTABLE);
-    const progress = clamp(slack - name, PROGRESS_MIN, PROGRESS_COMFORTABLE);
-    // Anything left after both are comfortable goes to Name, so the row still
-    // reaches the right edge instead of leaving a dead gutter.
-    const leftover = Math.max(0, slack - name - progress);
+    const nameMin = COLUMNS[0].min;
+    let progress = hasProgress ? widths.progress : 0;
+    let name: number;
 
-    const next = { ...widths, name: Math.round(name + leftover), progress: Math.round(progress) };
+    if (nameManual) {
+      // A layout someone has sized themselves is left exactly where they put
+      // it while it fits. When the window shrinks under it, give space back
+      // rather than let the grid overflow the header -- Name first, since it
+      // is the column with room to spare.
+      if (widths.name + progress <= slack) return;
+      let over = widths.name + progress - slack;
+      const fromName = Math.min(over, widths.name - nameMin);
+      name = widths.name - fromName;
+      over -= fromName;
+      if (over > 0 && hasProgress) {
+        progress = Math.max(PROGRESS_MIN, progress - over);
+      }
+    } else {
+      // Split the free space between Name and Progress rather than handing it
+      // all to Name. On a wide window an 1100px filename column next to a
+      // 190px progress bar looks broken, and the bar is the thing people watch.
+      if (hasProgress) {
+        const share = clamp(slack * 0.62, nameMin, NAME_COMFORTABLE);
+        progress = clamp(slack - share, PROGRESS_MIN, PROGRESS_COMFORTABLE);
+      }
+      // Anything left once Progress is comfortable goes to Name, so the row
+      // still reaches the right edge instead of leaving a dead gutter.
+      name = Math.max(nameMin, slack - progress);
+    }
+
+    const next = { ...widths, name: Math.round(name) };
+    if (hasProgress) next.progress = Math.round(progress);
     if (next.name === widths.name && next.progress === widths.progress) return;
     set({ widths: next });
   },
@@ -239,6 +296,7 @@ export const useColumns = create<ColumnState>((set, get) => ({
     };
     set(state);
     persist(state);
+    get().fitToContainer(get().containerPx);
   },
 }));
 

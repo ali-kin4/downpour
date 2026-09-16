@@ -2,9 +2,10 @@
  * The sortable, resizable column header.
  *
  * Every edge is a drag handle: drag to resize, double-click to fit the column
- * to its widest visible value. The handle is 9px wide but only 1px of it is
- * ever painted — a hit area you can actually land on, without a grid of visible
- * rules cutting the header into boxes.
+ * to its widest visible value. The hit area is 9px wide and the rule inside it
+ * 1px, painted faintly at rest and darkening under the pointer. An unpainted
+ * edge kept the header clean but left both gestures undiscoverable — nobody
+ * drags an edge they cannot see.
  */
 
 import clsx from "clsx";
@@ -178,7 +179,8 @@ export function ColumnHeader({
           </button>
 
           {/* Resize handle. Sits half outside the cell so it straddles the gap
-              and both neighbours feel grabbable. */}
+              and both neighbours feel grabbable. The rule is full height at
+              rest so the boundary reads as a boundary. */}
           <div
             role="separator"
             aria-orientation="vertical"
@@ -193,10 +195,10 @@ export function ColumnHeader({
           >
             <span
               className={clsx(
-                "h-4 w-px transition-colors duration-100",
+                "w-px transition-all duration-100",
                 dragging === c.id
-                  ? "bg-[var(--accent)]"
-                  : "bg-transparent group-hover:bg-[var(--border-strong)]",
+                  ? "h-8 bg-[var(--accent)]"
+                  : "h-4 bg-[var(--border-strong)] group-hover:h-8 group-hover:bg-[var(--accent)]",
               )}
             />
           </div>
