@@ -67,6 +67,14 @@ jobs:
             printf '<!doctype html><meta charset="utf-8"><title>Downpour</title>\n' > dist/index.html
           fi
 
+      # Pure arithmetic over the column store -- no DOM, no browser. It guards
+      # the one invariant the table cannot express in Rust: the grid never
+      # outgrows its container, or the header and the rows come apart.
+      - name: Frontend tests
+        shell: bash
+        run: |
+          if [ -f package.json ]; then npm run test:frontend; fi
+
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 

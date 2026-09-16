@@ -254,6 +254,11 @@ export const useColumns = create<ColumnState>((set, get) => ({
     if (slack <= 0) return;
 
     const nameMin = COLUMNS[0].min;
+    // Progress has two minimums: PROGRESS_MIN is the comfortable one the
+    // auto-split aims for, and this is the hard one a drag may reach. When the
+    // window is too tight for the comfortable width, the difference between
+    // them is what decides whether the grid fits at all.
+    const progressMin = COLUMNS.find((c) => c.id === "progress")?.min ?? PROGRESS_MIN;
     let progress = hasProgress ? widths.progress : 0;
     let name: number;
 
@@ -268,11 +273,7 @@ export const useColumns = create<ColumnState>((set, get) => ({
       name = widths.name - fromName;
       over -= fromName;
       if (over > 0 && hasProgress) {
-        // The column's hard minimum, not the comfortable one used by the
-        // auto-split: on a forced shrink that difference is what decides
-        // whether the grid fits at all.
-        const floor = COLUMNS.find((c) => c.id === "progress")?.min ?? PROGRESS_MIN;
-        progress = Math.max(floor, progress - over);
+        progress = Math.max(progressMin, progress - over);
       }
     } else {
       // Split the free space between Name and Progress rather than handing it
@@ -281,6 +282,11 @@ export const useColumns = create<ColumnState>((set, get) => ({
       if (hasProgress) {
         const share = clamp(slack * 0.62, nameMin, NAME_COMFORTABLE);
         progress = clamp(slack - share, PROGRESS_MIN, PROGRESS_COMFORTABLE);
+        // Too tight even for Name's minimum beside a comfortable bar: fall
+        // back to the hard floor rather than overflow the header.
+        if (nameMin + progress > slack) {
+          progress = Math.max(progressMin, slack - nameMin);
+        }
       }
       // Anything left once Progress is comfortable goes to Name, so the row
       // still reaches the right edge instead of leaving a dead gutter.

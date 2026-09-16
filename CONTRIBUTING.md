@@ -72,6 +72,21 @@ cargo test -p downpour-core  # the engine only — no frontend, no window
 `cargo test -p downpour-core` is what you will run 95% of the time. There are 161
 tests and they take seconds.
 
+There is one JavaScript test, and it is deliberately the only one:
+
+```bash
+npm run test:frontend        # column layout arithmetic
+```
+
+The download table's header is a sibling *above* the scroll area, not a row
+inside it, so a grid wider than its container does not scroll the two together
+-- it scrolls the rows out from under their own headings. Every width change in
+`src/store/columns.ts` is clamped to keep that from happening, and the test
+pins the four paths that can widen the grid: a drag, an auto-fit, showing a
+hidden column, and the window resizing. It is arithmetic, so it needs no DOM
+and no framework -- it transpiles the store with the esbuild Vite already
+ships and asserts on the numbers. **If you touch the width maths, run it.**
+
 ### The integration test harness
 
 `crates/downpour-core/tests/common/` contains a local HTTP server whose entire
