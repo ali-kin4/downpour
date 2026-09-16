@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.2.2] - 2026-09-16
 
+Carries the 1.2.1 fix below as well: 1.2.1 was prepared but never published, so
+its changes reach users here.
+
 ### Fixed
 
 - **The row menu no longer drags the table sideways.** Opening a row's `...`
@@ -506,8 +509,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.2.1...HEAD
-[1.2.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.1
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.2
 [1.2.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.0
 [1.1.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.1
 [1.1.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.1.0
