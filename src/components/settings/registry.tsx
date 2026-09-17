@@ -173,6 +173,11 @@ export const SETTINGS_INDEX = [
     keywords: "chrome firefox edge integration hand off intercept",
   },
   {
+    id: "browser.extension.pair",
+    label: "Pair a browser",
+    keywords: "pair pairing token key connect extension setup easy",
+  },
+  {
     id: "browser.extension.confirm",
     label: "Ask before starting a download from the browser",
     keywords: "confirm prompt ask dialog intercept capture idm download box",

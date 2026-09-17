@@ -74,6 +74,8 @@ pub fn run() {
             commands::path_exists,
             commands::get_rpc_info,
             commands::regenerate_rpc_token,
+            commands::open_pairing_window,
+            commands::pairing_seconds_left,
             commands::show_main_window,
             commands::abort_power_action,
             commands::read_text_file,

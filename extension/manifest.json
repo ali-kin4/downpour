@@ -10,26 +10,39 @@
   },
   "permissions": [
     "downloads",
+    "downloads.ui",
     "storage",
     "contextMenus",
     "cookies",
     "scripting",
     "activeTab"
   ],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["modifier-keys.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "modifier-keys.js"
+      ],
       "run_at": "document_start",
       "all_frames": true
     },
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["video-overlay.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "video-overlay.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true
     }

@@ -14,12 +14,21 @@ pub struct AppState {
     /// The port the loopback RPC server actually bound, which may differ from
     /// the configured one if it was taken.
     pub rpc_port: std::sync::atomic::AtomicU16,
+    /// Unix seconds until which `/api/v1/pair` will hand out the token, or 0.
+    ///
+    /// Pairing has to be unauthenticated -- handing over the token is the point
+    /// -- so what makes it safe is that it only answers during a window the
+    /// user opened by clicking in the app. Outside that window there is nothing
+    /// to attack. A deadline rather than a flag so it cannot be left open by a
+    /// path that forgot to close it.
+    pub pairing_until: std::sync::atomic::AtomicI64,
 }
 
 impl AppState {
     pub fn new(engine: Engine) -> Self {
         Self {
             engine,
+            pairing_until: std::sync::atomic::AtomicI64::new(0),
             rpc_port: std::sync::atomic::AtomicU16::new(0),
         }
     }

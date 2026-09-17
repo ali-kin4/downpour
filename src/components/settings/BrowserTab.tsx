@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { Copy, Eye, EyeOff, RefreshCw, TriangleAlert } from "lucide-react";
+import { Copy, Eye, EyeOff, Link2, RefreshCw, TriangleAlert } from "lucide-react";
 import { Badge, Button, Field, Row, Switch, TextInput } from "../ui";
 import {
   errorMessage,
   getRpcInfo,
   noteClipboardCopy,
+  openPairingWindow,
+  pairingSecondsLeft,
   regenerateRpcToken,
 } from "../../lib/api";
 import type { RpcInfo, Settings } from "../../lib/types";
@@ -24,6 +26,9 @@ export function BrowserTab({ settings }: { settings: Settings }) {
   const [revealed, setRevealed] = useState(false);
   const [confirmRegen, setConfirmRegen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Seconds left on an open pairing window, counted down so the wait is
+  // visible rather than a button that looks like it did nothing.
+  const [pairing, setPairing] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -38,6 +43,23 @@ export function BrowserTab({ settings }: { settings: Settings }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Ticks the countdown, and notices when the extension collects the token --
+  // the app end of pairing is consumed by the first caller, so the window
+  // closing early is the signal that it worked.
+  useEffect(() => {
+    if (pairing <= 0) return;
+    const t = window.setInterval(() => {
+      void pairingSecondsLeft().then(
+        (left) => {
+          setPairing(left);
+          if (left === 0) void load();
+        },
+        () => setPairing(0),
+      );
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [pairing, load]);
 
   const token = rpc?.token ?? settings.rpcToken;
 
@@ -92,6 +114,28 @@ export function BrowserTab({ settings }: { settings: Settings }) {
               })()
             }
           />
+        </Row>
+      </Setting>
+
+      <Setting id="browser.extension.pair">
+        <Row
+          label="Pair a browser"
+          hint="Opens a one-minute window in which the extension can collect the key itself. In the extension's settings, press Pair with Downpour. Nothing is copied or typed, and the key never appears on screen."
+        >
+          {pairing > 0 ? (
+            <Badge tone="accent">Waiting for the browser — {pairing}s</Badge>
+          ) : (
+            <Button
+              icon={<Link2 size={14} />}
+              onClick={() =>
+                void run("Could not start pairing", async () => {
+                  setPairing(await openPairingWindow());
+                })
+              }
+            >
+              Pair a browser
+            </Button>
+          )}
         </Row>
       </Setting>
 

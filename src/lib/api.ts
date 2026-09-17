@@ -214,6 +214,9 @@ export const createCategoryFolders = () => call<number>("create_category_folders
 
 export const getRpcInfo = () => call<RpcInfo>("get_rpc_info");
 export const regenerateRpcToken = () => call<string>("regenerate_rpc_token");
+/** Opens a window during which the extension may collect the token itself. */
+export const openPairingWindow = () => call<number>("open_pairing_window");
+export const pairingSecondsLeft = () => call<number>("pairing_seconds_left");
 
 // -- Events -----------------------------------------------------------------
 

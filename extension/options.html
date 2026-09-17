@@ -34,6 +34,7 @@
             <div class="row wrap">
               <button class="primary" id="saveToken">Save token</button>
               <button id="toggleReveal">Show</button>
+              <button id="pairNow" class="primary" type="button">Pair with Downpour</button>
               <button id="testConn">Test connection</button>
             </div>
             <div id="tokenMsg" class="msg" hidden></div>
@@ -79,6 +80,28 @@
           </div>
 
           <div id="appRulesPreview" class="msg" hidden style="margin-top: 10px"></div>
+        </section>
+
+        <!-- Browser download UI -->
+        <section class="card">
+          <h2>Chrome's download bar</h2>
+          <div class="row between" style="margin-top: 8px">
+            <div>
+              <div class="status-text">Hide Chrome's own download bar</div>
+              <p class="hint">
+                Chrome starts every download before this extension can hand it to Downpour, so its
+                download bar appears for a moment and is then taken away again. Turning this on
+                stops it appearing at all. It applies to the whole browser, so downloads you
+                deliberately send to Chrome by holding the bypass key lose their progress bar too
+                &mdash; leave it off if you use both.
+              </p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="hideBrowserDownloadUi" />
+              <span class="track"></span>
+            </label>
+          </div>
+          <div id="downloadUiMsg" class="hint" style="margin-top: 8px"></div>
         </section>
 
         <!-- Video button -->

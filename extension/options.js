@@ -98,6 +98,7 @@ async function load() {
   $('excludeExtensions').value = formatList(prefs.excludeExtensions);
   $('excludeHosts').value = formatList(prefs.excludeHosts);
   $('bypassModifier').value = String(prefs.bypassModifier || 'alt');
+  $('hideBrowserDownloadUi').checked = Boolean(prefs.hideBrowserDownloadUi);
   $('videoOverlayEnabled').checked = prefs.videoOverlayEnabled !== false;
   $('videoOverlayHosts').value = formatHostList(prefs.videoOverlayHosts);
   $('siteBlocklist').value = formatHostList(prefs.siteBlocklist);
@@ -236,6 +237,45 @@ $('useAppRules').addEventListener('change', async (e) => {
     e.target.checked = !e.target.checked;
     reflectRuleSource();
     setMsg('tokenMsg', 'Could not save: ' + err.message, 'err');
+  }
+});
+
+$('pairNow').addEventListener('click', async () => {
+  setMsg('tokenMsg', 'Asking Downpour...', 'warn');
+  try {
+    await send({ type: 'pair' });
+    // The token never passes through this page, so there is nothing to fill in
+    // and nothing left on a clipboard afterwards.
+    setMsg('tokenMsg', 'Paired. Downpour handed over the key itself.', 'ok');
+    await load();
+  } catch (err) {
+    setMsg('tokenMsg', String((err && err.message) || err), 'err');
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ * Chrome's download bar
+ * ------------------------------------------------------------------ */
+
+$('hideBrowserDownloadUi').addEventListener('change', async (e) => {
+  try {
+    const res = await send({ type: 'setHideBrowserDownloadUi', on: e.target.checked });
+    // Older builds of Chrome have no way to hide it. Say so plainly rather
+    // than leaving a switch that looks on and does nothing.
+    if (!res || res.supported === false) {
+      $('downloadUiMsg').textContent =
+        'This version of Chrome cannot hide the download bar.';
+      e.target.checked = false;
+      return;
+    }
+    $('downloadUiMsg').textContent = e.target.checked
+      ? "Hidden. Chrome will not show its download bar, including for downloads you send to it."
+      : "Shown, as Chrome normally does.";
+    setTimeout(() => {
+      $('downloadUiMsg').textContent = '';
+    }, 4000);
+  } catch (err) {
+    $('downloadUiMsg').textContent = String((err && err.message) || err);
   }
 });
 

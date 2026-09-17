@@ -341,6 +341,35 @@ pub fn regenerate_rpc_token(state: State<'_, AppState>) -> CmdResult<String> {
     Ok(saved.rpc_token)
 }
 
+/// Opens a short window during which a browser extension may collect the
+/// pairing token by asking for it.
+///
+/// This click is the whole security model of pairing. The endpoint that hands
+/// the token over cannot require the token, so what stands in for
+/// authentication is that the user opened this window seconds earlier and is
+/// sitting in front of the app waiting for it to be used. Returns how long it
+/// stays open so the interface can count down honestly rather than guess.
+#[tauri::command]
+pub fn open_pairing_window(state: State<'_, AppState>) -> u32 {
+    const SECONDS: i64 = 60;
+    state.pairing_until.store(
+        downpour_core::resume::now_unix() + SECONDS,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    SECONDS as u32
+}
+
+/// Whether a pairing window is still open, for the interface to reflect. Also
+/// lets it notice that pairing already happened, since the first caller
+/// consumes the window.
+#[tauri::command]
+pub fn pairing_seconds_left(state: State<'_, AppState>) -> u32 {
+    let until = state
+        .pairing_until
+        .load(std::sync::atomic::Ordering::Relaxed);
+    (until - downpour_core::resume::now_unix()).max(0) as u32
+}
+
 // ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------

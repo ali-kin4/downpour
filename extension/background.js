@@ -103,7 +103,16 @@ const DEFAULT_PREFS = {
   // someone can want their downloads intercepted without wanting anything
   // drawn on top of the pages they visit.
   videoOverlayEnabled: true,
-  videoOverlayHosts: [] // hosts where the pill is suppressed
+  videoOverlayHosts: [], // hosts where the pill is suppressed
+
+  // Hide Chrome's own download shelf/bubble while capture is on.
+  //
+  // Off by default, and deliberately so. It is a browser-wide setting, not a
+  // per-download one: while it is on, a download the user deliberately sent to
+  // the browser with the bypass modifier loses its progress UI too. Someone who
+  // wants every download in Downpour will want this; someone who switches
+  // between the two will not.
+  hideBrowserDownloadUi: false
 };
 
 /**
@@ -997,8 +1006,43 @@ async function installContextMenus() {
   });
 }
 
+/* ------------------------------------------------------------------ *
+ * Chrome's own download UI
+ * ------------------------------------------------------------------ */
+
+/**
+ * Hides or restores the browser's download shelf/bubble.
+ *
+ * Capture cannot stop Chrome starting a download -- `onDeterminingFilename`
+ * has to return before we know whether the app will take it, and holding it
+ * open freezes the browser. So Chrome's UI appears for as long as the hand-off
+ * takes, then the download is cancelled out from under it. Suppressing that UI
+ * is the only way to make the flash go away.
+ *
+ * Feature-detected rather than assumed: `setUiOptions` is recent, and an older
+ * Chrome should lose this quietly rather than throw on every startup. The
+ * permission it needs is declared in the manifest, and a Chrome that does not
+ * recognise it ignores it.
+ *
+ * Applied on install and on startup because it does not survive a browser
+ * restart -- it is a request by this extension, not a stored browser setting.
+ */
+async function applyDownloadUiPreference() {
+  if (!chrome.downloads || typeof chrome.downloads.setUiOptions !== 'function') return;
+  try {
+    const prefs = await getPrefs();
+    await chrome.downloads.setUiOptions({ enabled: !prefs.hideBrowserDownloadUi });
+  } catch (err) {
+    // Another extension holds the setting, or the permission was refused.
+    // Neither is worth interrupting the user over: the cost is a visible
+    // download shelf, which is what they had before.
+    console.info('[Downpour] could not set the browser download UI:', err && err.message);
+  }
+}
+
 chrome.runtime.onInstalled.addListener((details) => {
   installContextMenus().catch((err) => console.warn('[Downpour] menu install failed', err));
+  applyDownloadUiPreference();
   // First run with no token: take the user straight to pairing.
   if (details.reason === 'install') {
     getToken().then((token) => {
@@ -1009,6 +1053,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 chrome.runtime.onStartup.addListener(() => {
   installContextMenus().catch((err) => console.warn('[Downpour] menu install failed', err));
+  applyDownloadUiPreference();
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -1824,6 +1869,46 @@ async function handleMessage(msg) {
 
     case 'videoOverlayConfig':
       return videoOverlayConfig(msg.host);
+
+    case 'pair': {
+      // Asks the app to hand over the token. Only answered while the user has
+      // a pairing window open, which they open by clicking in the app -- so a
+      // refusal here is nearly always "you have not clicked it yet", and the
+      // message says so rather than reporting a bare 403.
+      // A full scan rather than the cached port: pairing is the one moment the
+      // extension may know nothing yet, including where the app is.
+      const { port } = await discoverPort(true);
+      const res = await fetchWithTimeout(
+        baseUrl(port) + '/api/v1/pair',
+        { method: 'POST', cache: 'no-store' },
+        PROBE_TIMEOUT_MS
+      );
+      if (res.status === 403) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(
+          body.error === 'no_pairing_window'
+            ? 'Downpour is not expecting a pairing right now. In the app open Settings -> Browser integration and press "Pair a browser", then try again within a minute.'
+            : 'Downpour refused the pairing request.'
+        );
+      }
+      if (!res.ok) throw new ApiError(res.status, null);
+      const body = await res.json();
+      if (!body || typeof body.token !== 'string' || body.token.length < 32) {
+        throw new Error('Downpour returned something that is not a token.');
+      }
+      await setToken(body.token);
+      await cachePort(port);
+      await setStatus({ state: STATE.ok, port, lastError: null });
+      return { ok: true };
+    }
+
+    case 'setHideBrowserDownloadUi': {
+      await setPrefs({ hideBrowserDownloadUi: Boolean(msg.on) });
+      await applyDownloadUiPreference();
+      const supported =
+        Boolean(chrome.downloads) && typeof chrome.downloads.setUiOptions === 'function';
+      return { on: Boolean(msg.on), supported };
+    }
 
     case 'videoOverlaySetEnabled': {
       const prefs = await setPrefs({ videoOverlayEnabled: Boolean(msg.on) });

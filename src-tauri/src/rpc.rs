@@ -29,6 +29,7 @@ use downpour_core::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// A download the browser handed over that is waiting to be confirmed.
@@ -73,6 +74,7 @@ pub async fn serve(engine: Engine, app: tauri::AppHandle) -> Option<u16> {
         .route("/api/v1/downloads", post(add_one))
         .route("/api/v1/downloads/batch", post(add_batch))
         .route("/api/v1/downloads/text", post(add_text))
+        .route("/api/v1/pair", post(pair))
         .route("/api/v1/show", post(show_window))
         .route("/api/v1/media/probe", post(media_probe))
         .route("/api/v1/media/resolve", post(media_resolve))
@@ -132,7 +134,8 @@ async fn gate(State(state): State<RpcState>, req: Request<Body>, next: Next) -> 
 
     // Presence is not a secret, and requiring a token to detect the app would
     // make the extension's pairing flow impossible to explain.
-    if req.uri().path() != "/health" {
+    let path = req.uri().path();
+    if path != "/health" && path != "/api/v1/pair" {
         let token = state.engine.settings().rpc_token;
         let presented = req
             .headers()
@@ -181,6 +184,16 @@ fn cors(mut response: Response, origin: Option<&str>) -> Response {
     // Without Vary, a cache could serve one extension's CORS headers to another.
     headers.insert(header::VARY, HeaderValue::from_static("Origin"));
     response
+}
+
+/// Whether this `Origin` belongs to a browser extension.
+///
+/// Load-bearing for pairing: a web page can reach `127.0.0.1`, but it cannot
+/// claim an extension origin -- the browser sets this header and will not let a
+/// page lie about it. So this is what separates "the user's extension is
+/// asking" from "a page the user happened to visit is asking".
+fn is_extension_origin(origin: &str) -> bool {
+    origin.starts_with("chrome-extension://") || origin.starts_with("moz-extension://")
 }
 
 /// Length-independent comparison. Returns false for differing lengths without
@@ -500,6 +513,52 @@ async fn add_text(
 
 /// Brings the Downpour window to the foreground.
 ///
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Paired {
+    token: String,
+}
+
+/// Hands the pairing token to a browser extension, during a window the user
+/// opened in the app.
+///
+/// Unauthenticated by necessity: the token is what this returns, so requiring
+/// it would be circular. Three things make that safe.
+///
+/// The user must have opened a pairing window seconds earlier by clicking in
+/// the app, so there is nothing here to attack the rest of the time. The caller
+/// must present an extension origin, which a web page cannot forge -- a page
+/// can reach `127.0.0.1`, but it cannot claim to be `chrome-extension://`. And
+/// the window is short, so a request that arrives while one is open is one the
+/// user is sitting in front of, waiting for.
+///
+/// It is single-use: the first caller closes the window. Two extensions racing
+/// for one click should not both win.
+async fn pair(State(state): State<RpcState>, headers: HeaderMap) -> Result<Json<Paired>, Response> {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !is_extension_origin(origin) {
+        tracing::warn!(%origin, "pairing refused: not a browser extension");
+        return Err(forbidden("not_an_extension"));
+    }
+
+    use tauri::Manager;
+    let app_state = state.app.state::<crate::state::AppState>();
+    let until = app_state.pairing_until.load(Ordering::Relaxed);
+    if downpour_core::resume::now_unix() > until {
+        return Err(forbidden("no_pairing_window"));
+    }
+    // Consume it, so the click authorises one pairing and not a stream of them.
+    app_state.pairing_until.store(0, Ordering::Relaxed);
+
+    tracing::info!(%origin, "paired a browser extension");
+    Ok(Json(Paired {
+        token: state.engine.settings().rpc_token,
+    }))
+}
+
 /// The extension needs this for its "Open Downpour" button; the alternative
 /// was registering a custom URL scheme, which is far more machinery for one
 /// action and leaves a protocol handler installed system-wide.
@@ -615,6 +674,17 @@ fn is_http_url(url: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn forbidden(code: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorBody {
+            error: code.into(),
+            detail: None,
+        }),
+    )
+        .into_response()
+}
+
 fn bad_request(code: &str) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -691,6 +761,23 @@ mod tests {
             !constant_time_eq(b"", b""),
             "an empty token never authorises"
         );
+    }
+
+    #[test]
+    fn only_extensions_may_ask_to_pair() {
+        assert!(is_extension_origin("chrome-extension://abcdef"));
+        assert!(is_extension_origin("moz-extension://abcdef"));
+
+        // The cases that matter. A page cannot set its own Origin, so these
+        // are what an attacker would have to be able to produce.
+        assert!(!is_extension_origin("https://evil.example.com"));
+        assert!(!is_extension_origin("http://127.0.0.1:8080"));
+        assert!(!is_extension_origin("null"));
+        assert!(!is_extension_origin(""));
+
+        // Prefix matching is the whole implementation, so pin the near misses.
+        assert!(!is_extension_origin("https://chrome-extension://spoof"));
+        assert!(!is_extension_origin("chrome-extension:/abcdef"));
     }
 
     #[test]
