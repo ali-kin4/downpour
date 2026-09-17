@@ -25,7 +25,7 @@ use crate::transfer::{
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -1061,6 +1061,18 @@ impl Engine {
         Ok(outcome.path)
     }
 
+    /// Whether a download other than `except` is already using this name.
+    ///
+    /// Every status counts. A finished one has no part file to collide with,
+    /// and anything else -- paused, failed, queued -- may still resume onto it.
+    fn name_is_claimed(&self, dir: &Path, name: &str, except: &str) -> bool {
+        self.inner
+            .items
+            .read()
+            .values()
+            .any(|i| i.id != except && i.filename == name && i.dest_dir == dir)
+    }
+
     /// Settles the on-disk name for a download and reserves it.
     ///
     /// Runs under `name_lock` and creates the part file before releasing it, so
@@ -1108,9 +1120,30 @@ impl Engine {
                 ConflictPolicy::Rename => naming::deduplicate(&item.dest_dir, &desired),
             }
         } else if part.exists() {
-            // Another transfer is mid-flight on this name. `deduplicate` skips
-            // occupied files and occupied part files alike.
-            naming::deduplicate(&item.dest_dir, &desired)
+            // A part file usually means another transfer is mid-flight on this
+            // name, and stepping aside is right. But it can also be an orphan:
+            // the entry was removed from the list while its bytes stayed on
+            // disk. Dodging that name starts a download from zero that is
+            // already most of the way finished -- and the old bytes are then
+            // stranded, because nothing will ever point at them again.
+            //
+            // So adopt an orphan, under two conditions. No other download may
+            // claim the name, or we would be racing a live transfer; and the
+            // sidecar must name the same URL, because resuming one file into
+            // another file's bytes is the one failure this engine must never
+            // produce. Same name and same size is not enough to be sure --
+            // `check_still_valid` compares the response, not the address.
+            if self.name_is_claimed(&item.dest_dir, &desired, &item.id)
+                || !sidecar_covers(&item.dest_dir, &desired, &item.url)
+            {
+                naming::deduplicate(&item.dest_dir, &desired)
+            } else {
+                tracing::info!(
+                    name = %desired,
+                    "adopting an orphaned part file rather than starting over"
+                );
+                desired
+            }
         } else {
             desired
         };
@@ -1364,4 +1397,77 @@ fn directory_holds_files(dir: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+
+/// Whether the sidecar beside `name` describes a download of `url`.
+///
+/// The guard on adopting an orphaned part file. A sidecar that cannot be read,
+/// or that names a different address, means the bytes on disk belong to some
+/// other file -- and resuming into them would splice two downloads together.
+/// The answer is then no, and the caller picks a fresh name instead.
+fn sidecar_covers(dir: &Path, name: &str, url: &str) -> bool {
+    let meta = dir.join(format!("{name}.dpmeta"));
+    match crate::resume::Sidecar::load(&meta) {
+        Ok(side) => side.url == url,
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::RemoteInfo;
+    use crate::resume::{plan_segments, Sidecar};
+
+    fn scratch() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dp-adopt-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_sidecar(dir: &Path, name: &str, url: &str) {
+        let remote = RemoteInfo {
+            final_url: url.into(),
+            size: Some(1024),
+            supports_range: true,
+            etag: None,
+            last_modified: None,
+            content_type: None,
+            suggested_filename: None,
+        };
+        Sidecar::new(url.into(), remote, plan_segments(1024, 2), 1024)
+            .save(&dir.join(format!("{name}.dpmeta")))
+            .unwrap();
+    }
+
+    #[test]
+    fn an_orphan_is_only_adopted_when_its_sidecar_names_the_same_url() {
+        let dir = scratch();
+        let url = "https://example.com/a.bin";
+
+        // Nothing on disk: there is no orphan to adopt.
+        assert!(!sidecar_covers(&dir, "a.bin", url));
+
+        // The same download, interrupted. Its bytes are worth keeping.
+        write_sidecar(&dir, "a.bin", url);
+        assert!(sidecar_covers(&dir, "a.bin", url));
+
+        // A different file that happens to share a name. Resuming into these
+        // bytes would splice two downloads together, so it must be refused --
+        // the sizes match here, which is exactly why size is not the test.
+        write_sidecar(&dir, "b.bin", "https://elsewhere.example/other.bin");
+        assert!(!sidecar_covers(&dir, "b.bin", url));
+
+        // A part file with no sidecar carries nothing resumable, so adopting
+        // it would only overwrite bytes we cannot use.
+        std::fs::write(dir.join("c.bin.dpart"), b"partial").unwrap();
+        assert!(!sidecar_covers(&dir, "c.bin", url));
+
+        // Corrupt sidecar: unreadable is not "probably fine".
+        std::fs::write(dir.join("d.bin.dpmeta"), b"{ not json").unwrap();
+        assert!(!sidecar_covers(&dir, "d.bin", url));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

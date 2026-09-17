@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-17
+
+### Fixed
+
+- **A part file left behind by a removed download is resumed, not started
+  over.** Removing a download from the list leaves its bytes on disk -- the
+  file is only deleted if you ask for that separately. Adding the same link
+  again then side-stepped those bytes and downloaded the whole file a second
+  time under a numbered name, while the original sat there permanently
+  unreachable. On a large file over a metered connection that is an expensive
+  way to be tidy.
+
+  The part file is now adopted and the download continues from where it
+  stopped. Two conditions guard it: no other download may be using that name,
+  and the sidecar must name the same URL -- because a file that merely shares
+  a name and a size is a different file, and resuming into its bytes would
+  splice two downloads together.
+
 ## [1.3.0] - 2026-09-16
 
 ### Added
@@ -536,7 +554,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.1
 [1.3.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.0
 [1.2.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.2
 [1.2.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.0
