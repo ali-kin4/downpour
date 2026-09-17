@@ -25,3 +25,7 @@ Thumbs.db
 *.dpart
 *.dpmeta
 downpour.db*
+
+# Worktrees created for background agents. They are checkouts of this same
+# repository, not content that belongs in it.
+.claude/worktrees/
