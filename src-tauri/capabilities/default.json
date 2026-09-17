@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for Downpour's windows. Every panel needs these, not just the main window: each one is a second webview driven by the same event stream, and omitting a label here silently blocks `listen`. A panel that cannot listen renders its first frame and then never changes again, which is the most confusing symptom available -- so a new window label belongs in this list as part of adding the window.",
+  "description": "Permissions for Downpour's windows. Every panel needs these, not just the main window: each one is a second webview driven by the same event stream, and omitting a label here silently blocks `listen`. A panel that cannot listen renders its first frame and then never changes again, which is the most confusing symptom available -- so a new window label belongs in this list as part of adding the window. `download-*` is the per-download box: one window per download, so it can only be matched by pattern.",
   "windows": [
     "main",
     "progress",
-    "confirm"
+    "confirm",
+    "download-*"
   ],
   "permissions": [
     "core:default",
