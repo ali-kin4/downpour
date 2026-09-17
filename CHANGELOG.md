@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-09-17
+
+### Fixed
+
+- **Resuming an orphaned part file actually works now.** 1.3.1 chose the right
+  name and then threw it away: the step that reserves a name refuses to touch
+  an existing part file, which is correct everywhere except here, where the
+  file already being there is the entire point. It reported the adopted bytes
+  as an obstacle and renamed around them, so a re-added download still started
+  from zero -- the behaviour 1.3.1 set out to fix.
+
+### Changed
+
+- **The folder button beside a download's destination is easier to see and to
+  hit.** It was a 14px glyph in a small grey square, the same weight as a
+  cancel, though it is the only way to answer "where does this go?" without
+  typing a path by hand. It is now a larger mark in the accent colour on a
+  wider button, and it is one component rather than a copy in each dialog.
+
 ## [1.3.1] - 2026-09-17
 
 ### Fixed
@@ -554,7 +573,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.3.2...HEAD
+[1.3.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.2
 [1.3.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.1
 [1.3.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.0
 [1.2.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.2.2

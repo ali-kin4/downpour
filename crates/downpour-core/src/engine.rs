@@ -1107,6 +1107,10 @@ impl Engine {
         let target = item.dest_dir.join(&desired);
         let part = item.dest_dir.join(format!("{desired}.dpart"));
 
+        // `adopted` travels with the name: the reservation below refuses to
+        // touch an existing part file, which is right for every other case and
+        // exactly wrong for this one -- the file being there is the whole point.
+        let mut adopted = false;
         let filename = if target.exists() {
             match conflict {
                 ConflictPolicy::Skip => {
@@ -1142,11 +1146,21 @@ impl Engine {
                     name = %desired,
                     "adopting an orphaned part file rather than starting over"
                 );
+                adopted = true;
                 desired
             }
         } else {
             desired
         };
+
+        // An adopted orphan needs no reservation: its part file is already on
+        // disk, and its existence is what reserves the name. Creating it is not
+        // merely unnecessary here, it is the one thing that must not happen --
+        // `create_new` would report the file as an obstacle and the fallback
+        // below would rename around the very bytes we set out to keep.
+        if adopted {
+            return Ok(Claim::Named(filename));
+        }
 
         // Reserve it on disk before releasing the lock. `create_new` also
         // covers the one race the lock cannot: another process writing into

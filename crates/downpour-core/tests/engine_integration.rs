@@ -1609,3 +1609,83 @@ async fn migration_runs_at_most_once() {
         "the migration must not fire a second time"
     );
 }
+
+/// A part file whose download was removed from the list is resumed, not
+/// restarted.
+///
+/// Removing a download leaves its bytes on disk -- deleting the file is a
+/// separate action -- so adding the same link again has to find them. It used
+/// to step around them into `name (1).ext` and fetch the whole file a second
+/// time, stranding the original bytes permanently.
+///
+/// The proof is what the server is asked for, not just the name on disk: a
+/// restart is indistinguishable from a resume by filename alone, and both end
+/// with the correct bytes. Counting what crosses the wire is the only assertion
+/// that can tell them apart.
+#[tokio::test]
+async fn an_orphaned_part_file_is_resumed_rather_than_downloaded_again() {
+    use downpour_core::model::RemoteInfo;
+    use downpour_core::resume::{plan_segments, Sidecar};
+
+    let total = 1024 * 1024;
+    let data = payload(total);
+    let expected = sha256(&data);
+    let server = common::start(data.clone()).await;
+    let dir = TempDir::new();
+    let url = server.url("/file");
+
+    // An interrupted download, exactly as one is left on disk: the part file
+    // preallocated to full size with the first half written, and a sidecar
+    // recording how far it got. Nothing in the list points at it.
+    let half = total / 2;
+    let part = dir.0.join("one.bin.dpart");
+    let mut bytes = data.clone();
+    bytes[half..].fill(0);
+    std::fs::write(&part, &bytes).unwrap();
+
+    let mut segments = plan_segments(total as u64, 1);
+    segments[0].cursor = half as u64;
+    let remote = RemoteInfo {
+        final_url: url.clone(),
+        size: Some(total as u64),
+        supports_range: true,
+        etag: None,
+        last_modified: None,
+        content_type: None,
+        suggested_filename: None,
+    };
+    Sidecar::new(url.clone(), remote, segments, total as u64)
+        .save(&dir.0.join("one.bin.dpmeta"))
+        .unwrap();
+
+    server.state.reset_counters();
+
+    let engine = engine_with(Settings::default());
+    let id = engine
+        .add(spec(&url, &dir.0, "one.bin", StartMode::Start))
+        .unwrap();
+
+    let e = engine.clone();
+    let done = wait_for(Duration::from_secs(30), move || {
+        e.get(&id).map(|i| i.status) == Some(DownloadStatus::Completed)
+    })
+    .await;
+    assert!(done, "download did not complete: {:?}", engine.list());
+
+    let item = &engine.list()[0];
+    assert_eq!(
+        item.filename, "one.bin",
+        "the orphan was side-stepped into a new name instead of adopted"
+    );
+    assert_eq!(
+        sha256(&std::fs::read(item.target_path()).unwrap()),
+        expected,
+        "adopting the part file must still produce the original bytes"
+    );
+    assert!(
+        server.state.bytes_served() < total,
+        "the whole file was fetched again ({} of {} bytes): adopted in name only",
+        server.state.bytes_served(),
+        total
+    );
+}

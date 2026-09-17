@@ -7,7 +7,8 @@
  */
 
 import clsx from "clsx";
-import { X } from "lucide-react";
+import { open as openFolder } from "@tauri-apps/plugin-dialog";
+import { FolderOpen, X } from "lucide-react";
 import {
   createContext,
   useContext,
@@ -63,6 +64,56 @@ export function Button({
     >
       {icon}
       {children}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Folder picker
+// ---------------------------------------------------------------------------
+
+/**
+ * The browse control that sits beside a folder field.
+ *
+ * Its own component because it appears next to every folder input in the app
+ * and was drifting: a 14px glyph in a square grey button, the same weight as a
+ * cancel or a close, reading as decoration rather than as the one control on
+ * the row that opens something. It is the only way to answer "where does this
+ * go?" without typing a path by hand, so it is drawn like an action -- a larger
+ * mark in the accent colour, on a button wide enough to look deliberate, with
+ * a border that picks up the accent under the pointer.
+ */
+export function FolderPicker({
+  onPick,
+  defaultPath,
+  label = "Browse for a folder",
+}: {
+  onPick: (dir: string) => void;
+  defaultPath?: string;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={async () => {
+        const picked = await openFolder({
+          directory: true,
+          defaultPath: defaultPath || undefined,
+        });
+        if (typeof picked === "string") onPick(picked);
+      }}
+      className={clsx(
+        "inline-flex h-8 w-10 shrink-0 items-center justify-center",
+        "rounded-[var(--radius-control)] border border-[var(--border-strong)]",
+        "bg-[var(--surface-raised)] text-[var(--accent)]",
+        "transition-colors duration-150",
+        "hover:border-[var(--accent)] hover:bg-[var(--surface-hover)]",
+        "active:brightness-95",
+      )}
+    >
+      <FolderOpen size={17} strokeWidth={1.9} />
     </button>
   );
 }

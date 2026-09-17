@@ -7,14 +7,12 @@
  * file downloads on one connection instead of eight.
  */
 
-import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   AlertTriangle,
   CalendarClock,
   CheckCircle2,
   ChevronDown,
-  FolderOpen,
   Link2,
   Play,
   Plus,
@@ -26,7 +24,7 @@ import type { RemoteInfo, StartMode } from "../lib/types";
 import { useApp } from "../store/app";
 import { DuplicateNotice } from "./DuplicateNotice";
 import { looksLikeMediaPage, MediaSuggestion } from "./MediaDialog";
-import { Button, Dialog, Field, Segmented, Spinner, TextArea, TextInput } from "./ui";
+import { Button, Dialog, Field, FolderPicker, Segmented, Spinner, TextArea, TextInput } from "./ui";
 
 const PROBE_DEBOUNCE_MS = 550;
 
@@ -249,17 +247,7 @@ export function AddDialog() {
                 }
                 spellCheck={false}
               />
-              <Button
-                aria-label="Browse for a folder"
-                icon={<FolderOpen size={14} />}
-                onClick={async () => {
-                  const picked = await openFolder({
-                    directory: true,
-                    defaultPath: destDir || undefined,
-                  });
-                  if (typeof picked === "string") setDestDir(picked);
-                }}
-              />
+              <FolderPicker defaultPath={destDir} onPick={setDestDir} />
             </div>
           </Field>
         </div>

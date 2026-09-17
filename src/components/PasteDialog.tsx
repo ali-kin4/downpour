@@ -14,17 +14,15 @@ import {
   CalendarClock,
   ClipboardPaste,
   FileUp,
-  FolderOpen,
   Play,
   Plus,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { open as openFolder } from "@tauri-apps/plugin-dialog";
 import * as api from "../lib/api";
 import { hostOf } from "../lib/format";
 import type { StartMode } from "../lib/types";
 import { useApp } from "../store/app";
-import { Button, Dialog, Field, Segmented, TextArea, TextInput } from "./ui";
+import { Button, Dialog, Field, FolderPicker, Segmented, TextArea, TextInput } from "./ui";
 
 export function PasteDialog() {
   const open = useApp((s) => s.pasteOpen);
@@ -200,17 +198,7 @@ ${contents}` : contents));
                 }
                 spellCheck={false}
               />
-              <Button
-                aria-label="Browse for a folder"
-                icon={<FolderOpen size={14} />}
-                onClick={async () => {
-                  const picked = await openFolder({
-                    directory: true,
-                    defaultPath: destDir || undefined,
-                  });
-                  if (typeof picked === "string") setDestDir(picked);
-                }}
-              />
+              <FolderPicker defaultPath={destDir} onPick={setDestDir} />
             </div>
           </Field>
 
