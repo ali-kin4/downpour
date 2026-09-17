@@ -7,6 +7,7 @@
 
 mod clipboard;
 mod commands;
+mod confirm_window;
 mod logging;
 mod media;
 mod power;

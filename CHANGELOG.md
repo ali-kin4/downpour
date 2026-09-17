@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-17
+
+### Changed
+
+- **A download captured from the browser now asks in a small panel, not by
+  bringing the whole app to the front.** 1.3.0 raised the main window to put a
+  one-line question, which buried whatever you were looking at and was a lot of
+  application to arrive over one file. The question now appears in a compact
+  window near the middle of the screen carrying the filename, size, source and
+  destination, with Enter to take it and Escape to decline.
+
+  It keeps a queue rather than opening a window per download: a page that fires
+  four at once asks about them in turn, showing how many are waiting, and the
+  panel closes itself when the last is answered. Declining is not a half
+  measure -- the browser's own copy was already handed over, so nothing is
+  fetched by anyone.
+
 ## [1.3.3] - 2026-09-17
 
 ### Fixed
@@ -589,7 +606,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.4.0
 [1.3.3]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.3
 [1.3.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.2
 [1.3.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.1

@@ -391,11 +391,14 @@ async fn add_one(
         item.start_mode,
         state.engine.settings().extension_confirm_downloads,
     ) {
-        use tauri::{Emitter, Manager};
-        if let Some(w) = state.app.get_webview_window("main") {
-            let _ = w.show();
-            let _ = w.unminimize();
-            let _ = w.set_focus();
+        use tauri::Emitter;
+        // The compact window, not the main one. Bringing the whole application
+        // forward to ask about a single file interrupts far more than the
+        // question is worth, and it buries whatever the user was actually
+        // looking at. The panel listens for the event below, so one already on
+        // screen just adds this download to its queue.
+        if let Err(e) = crate::confirm_window::open(&state.app) {
+            tracing::warn!(error = %e, "could not open the confirmation window");
         }
         let filename = item.filename.clone().unwrap_or_default();
         let _ = state.app.emit(

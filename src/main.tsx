@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { ConfirmWindow } from "./components/ConfirmWindow";
 import { ProgressWindow } from "./components/ProgressWindow";
 import "./styles/theme.css";
 
@@ -14,11 +15,20 @@ if (import.meta.env.DEV) {
 const root = document.getElementById("root");
 if (!root) throw new Error("#root is missing from index.html");
 
-// The compact progress panel is a second Tauri window pointed at this same
-// bundle. Routing on a query parameter keeps one build, one store and one set
-// of design tokens rather than a second frontend to keep in sync.
+// The compact panels -- the progress display and the capture prompt -- are
+// further Tauri windows pointed at this same bundle. Routing on a query
+// parameter keeps one build, one store and one set of design tokens rather
+// than a second frontend to keep in sync.
 const view = new URLSearchParams(window.location.search).get("view");
 
 createRoot(root).render(
-  <StrictMode>{view === "progress" ? <ProgressWindow /> : <App />}</StrictMode>,
+  <StrictMode>
+    {view === "progress" ? (
+      <ProgressWindow />
+    ) : view === "confirm" ? (
+      <ConfirmWindow />
+    ) : (
+      <App />
+    )}
+  </StrictMode>,
 );
