@@ -229,17 +229,6 @@ struct Health {
     ok: bool,
 }
 
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-struct PendingDownload {
-    url: String,
-    headers: BTreeMap<String, String>,
-    filename: Option<String>,
-    dest_dir: Option<PathBuf>,
-    size_hint: Option<u64>,
-    source: Option<String>,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CaptureSettings {
@@ -404,7 +393,7 @@ async fn add_one(
         item.start_mode,
         state.engine.settings().extension_confirm_downloads,
     ) {
-        use tauri::Emitter;
+        use tauri::{Emitter, Manager};
         // The compact window, not the main one. Bringing the whole application
         // forward to ask about a single file interrupts far more than the
         // question is worth, and it buries whatever the user was actually
@@ -414,17 +403,26 @@ async fn add_one(
             tracing::warn!(error = %e, "could not open the confirmation window");
         }
         let filename = item.filename.clone().unwrap_or_default();
-        let _ = state.app.emit(
-            CONFIRM_EVENT,
-            PendingDownload {
-                url: item.url,
-                headers: item.headers,
-                filename: item.filename,
-                dest_dir: item.dest_dir,
-                size_hint: item.size_hint,
-                source: item.source,
-            },
-        );
+        let entry = crate::state::PendingDownload {
+            id: uuid::Uuid::new_v4().to_string(),
+            url: item.url,
+            headers: item.headers,
+            filename: item.filename,
+            dest_dir: item.dest_dir,
+            size_hint: item.size_hint,
+            source: item.source,
+        };
+        // Queue it before the event goes out. A panel that is opening will read
+        // the queue when it loads; one already open is told by the event. Emit
+        // alone would lose the first download every time, since the window it
+        // is opening does not exist yet to hear it.
+        state
+            .app
+            .state::<crate::state::AppState>()
+            .pending
+            .lock()
+            .push(entry.clone());
+        let _ = state.app.emit(CONFIRM_EVENT, entry);
         // 202 rather than 201: nothing was created. The extension still takes
         // Chrome's copy away on any 2xx, which is what we want -- the download
         // is Downpour's to run or to drop now, and a duplicate arriving in the

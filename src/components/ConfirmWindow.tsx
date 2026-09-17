@@ -31,16 +31,38 @@ export function ConfirmWindow() {
   const [queue, setQueue] = useState<api.PendingDownload[]>([]);
   const [destDir, setDestDir] = useState("");
   const [busy, setBusy] = useState(false);
+  // Until the first read of the waiting list has come back, an empty queue
+  // means "not asked yet", not "nothing to do" -- and closing on it would shut
+  // the window in the instant before it learns why it was opened.
+  const [loaded, setLoaded] = useState(false);
   const pending = queue[0];
 
-  // Every capture arrives on the same channel, whether or not this window was
-  // already open, so appending is all the queueing there is to do.
+  // The list is read rather than waited for. The request that opens this window
+  // is the same one that produces the first download, so its event is emitted
+  // before this webview exists to hear it -- relying on the event alone loses
+  // every first download and leaves the panel staring at nothing.
+  useEffect(() => {
+    void api.pendingDownloads().then(
+      (waiting) => {
+        setQueue((q) => {
+          const seen = new Set(q.map((p) => p.id));
+          return [...q, ...waiting.filter((p) => !seen.has(p.id))];
+        });
+        setLoaded(true);
+      },
+      () => setLoaded(true),
+    );
+  }, []);
+
+  // And the event covers what arrives while the panel is already open.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
 
     void api
-      .onConfirmDownload((item) => setQueue((q) => [...q, item]))
+      .onConfirmDownload((item) =>
+        setQueue((q) => (q.some((p) => p.id === item.id) ? q : [...q, item])),
+      )
       .then((fn) => {
         if (cancelled) fn();
         else unlisten = fn;
@@ -61,10 +83,18 @@ export function ConfirmWindow() {
   // Nothing left to ask about. The window has no other purpose, so it goes --
   // the downloads themselves live in the engine and are unaffected.
   useEffect(() => {
-    if (queue.length === 0) void getCurrentWindow().close();
-  }, [queue.length]);
+    if (loaded && queue.length === 0) void getCurrentWindow().close();
+  }, [loaded, queue.length]);
 
-  const answer = useCallback(() => setQueue((q) => q.slice(1)), []);
+  // Answering drops it on both sides: the list here, and the one the app keeps
+  // so a panel opened later is not asked the same question again.
+  const answer = useCallback(() => {
+    setQueue((q) => {
+      const [done, ...rest] = q;
+      if (done) void api.resolvePending(done.id);
+      return rest;
+    });
+  }, []);
 
   const start = useCallback(async () => {
     if (!pending || busy) return;

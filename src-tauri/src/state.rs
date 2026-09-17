@@ -22,6 +22,29 @@ pub struct AppState {
     /// to attack. A deadline rather than a flag so it cannot be left open by a
     /// path that forgot to close it.
     pub pairing_until: std::sync::atomic::AtomicI64,
+    /// Downloads the browser handed over that are waiting to be confirmed.
+    ///
+    /// Held here rather than pushed straight at the window, because the window
+    /// is opened by the same request that produces one: an event emitted in
+    /// that instant arrives before the webview exists to hear it, and is simply
+    /// lost. The panel reads this list when it loads and the event only tells
+    /// an *already open* panel that the list has grown.
+    pub pending: parking_lot::Mutex<Vec<PendingDownload>>,
+}
+
+/// A download waiting for the user to say yes.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingDownload {
+    /// Identifies this request while it waits. Nothing is in the engine yet, so
+    /// there is no download id to use.
+    pub id: String,
+    pub url: String,
+    pub headers: std::collections::BTreeMap<String, String>,
+    pub filename: Option<String>,
+    pub dest_dir: Option<std::path::PathBuf>,
+    pub size_hint: Option<u64>,
+    pub source: Option<String>,
 }
 
 impl AppState {
@@ -29,6 +52,7 @@ impl AppState {
         Self {
             engine,
             pairing_until: std::sync::atomic::AtomicI64::new(0),
+            pending: parking_lot::Mutex::new(Vec::new()),
             rpc_port: std::sync::atomic::AtomicU16::new(0),
         }
     }

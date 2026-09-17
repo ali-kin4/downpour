@@ -1156,6 +1156,7 @@ dependencies = [
  "anyhow",
  "axum",
  "downpour-core",
+ "parking_lot",
  "reqwest 0.12.28",
  "semver",
  "serde",
@@ -1176,6 +1177,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "url",
+ "uuid",
 ]
 
 [[package]]

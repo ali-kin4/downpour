@@ -370,6 +370,22 @@ pub fn pairing_seconds_left(state: State<'_, AppState>) -> u32 {
     (until - downpour_core::resume::now_unix()).max(0) as u32
 }
 
+/// Downloads handed over by the browser that are still waiting for an answer.
+///
+/// Read by the confirmation panel when it loads. The panel cannot rely on the
+/// event alone: the request that opens the window is the same one that produces
+/// the download, so the event is emitted before the webview exists.
+#[tauri::command]
+pub fn pending_downloads(state: State<'_, AppState>) -> Vec<crate::state::PendingDownload> {
+    state.pending.lock().clone()
+}
+
+/// Drops an answered download from the waiting list, however it was answered.
+#[tauri::command]
+pub fn resolve_pending(state: State<'_, AppState>, id: String) {
+    state.pending.lock().retain(|p| p.id != id);
+}
+
 // ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------

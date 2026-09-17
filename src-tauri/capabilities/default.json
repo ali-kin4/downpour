@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions for Downpour's windows. Both the main window and the compact progress panel need these: the panel is a second webview driven by the same event stream, and omitting it here silently blocks `listen`, leaving its progress bar frozen at whatever it loaded with.",
+  "description": "Permissions for Downpour's windows. Every window needs these, not just the main one: each compact panel is a second webview driven by the same event stream, and omitting one here silently blocks `listen` -- the panel opens and then sits there with whatever it loaded with, which looks like the feature not working rather than like a permission.",
   "windows": [
     "main",
-    "progress"
+    "progress",
+    "confirm"
   ],
   "permissions": [
     "core:default",

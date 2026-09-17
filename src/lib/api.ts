@@ -162,6 +162,8 @@ export async function onClipboardCapture(
  * after the user says yes would arrive without them.
  */
 export interface PendingDownload {
+  /** Identifies the request while it waits; nothing is in the engine yet. */
+  id: string;
   url: string;
   headers: Record<string, string>;
   filename: string | null;
@@ -169,6 +171,11 @@ export interface PendingDownload {
   sizeHint: number | null;
   source: string | null;
 }
+
+/** What is waiting to be confirmed right now. Read when the panel loads. */
+export const pendingDownloads = () => call<PendingDownload[]>("pending_downloads");
+/** Drops an answered download from the waiting list, however it was answered. */
+export const resolvePending = (id: string) => call<void>("resolve_pending", { id });
 
 export async function onConfirmDownload(
   handler: (pending: PendingDownload) => void,
