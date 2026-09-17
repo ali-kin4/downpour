@@ -49,6 +49,10 @@ pub struct ServerState {
     /// Total payload bytes handed out, so a resume can be proven to have
     /// fetched less than the whole file.
     pub bytes_served: AtomicUsize,
+    /// Milliseconds to wait between body chunks. Lets a test reproduce the one
+    /// thing a local server otherwise cannot: a worker parked waiting on the
+    /// network, which is where a download spends nearly all of its life.
+    pub chunk_delay_ms: AtomicUsize,
 }
 
 impl ServerState {
@@ -60,6 +64,10 @@ impl ServerState {
     }
     pub fn bytes_served(&self) -> usize {
         self.bytes_served.load(Ordering::SeqCst)
+    }
+    /// Trickles the body out in `parts` pieces, pausing between each.
+    pub fn trickle(&self, delay_ms: usize) {
+        self.chunk_delay_ms.store(delay_ms, Ordering::SeqCst);
     }
     pub fn reset_counters(&self) {
         self.requests.store(0, Ordering::SeqCst);
@@ -109,6 +117,7 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
         requests: AtomicUsize::new(0),
         ranged_requests: AtomicUsize::new(0),
         bytes_served: AtomicUsize::new(0),
+        chunk_delay_ms: AtomicUsize::new(0),
     });
 
     let app = Router::new()
@@ -231,6 +240,21 @@ async fn body_for(state: &Arc<ServerState>, payload: Vec<u8>) -> Body {
     state
         .bytes_served
         .fetch_add(payload.len(), Ordering::SeqCst);
+    let delay = state.chunk_delay_ms.load(Ordering::SeqCst);
+    if delay > 0 {
+        // Eight pieces with a wait before each: long enough that a client which
+        // only notices a pause between chunks is plainly distinguishable from
+        // one that can be woken mid-wait.
+        let piece = payload.len().div_ceil(8).max(1);
+        let pieces: Vec<Vec<u8>> = payload.chunks(piece).map(|c| c.to_vec()).collect();
+        let stream = futures::stream::unfold(pieces.into_iter(), move |mut it| async move {
+            let next = it.next()?;
+            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+            Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(next)), it))
+        });
+        return Body::from_stream(stream);
+    }
+
     let truncate_at = *state.truncate_after.lock().await;
     let remaining = state.truncate_times.load(Ordering::SeqCst);
 

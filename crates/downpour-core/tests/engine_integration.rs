@@ -1689,3 +1689,71 @@ async fn an_orphaned_part_file_is_resumed_rather_than_downloaded_again() {
         total
     );
 }
+
+/// A pause stops the transfer promptly, not whenever the next chunk lands.
+///
+/// The flag used to be read only after `stream.next()` returned, so every
+/// worker had to receive its in-flight chunk before noticing -- with a speed
+/// limit in play it also had to sleep out the limiter first. The download
+/// visibly trickled on for seconds after the user asked it to stop.
+///
+/// Measured in bytes rather than in wall-clock time: a timing assertion on a
+/// shared CI runner is a flake waiting to happen, while "how much more did the
+/// server hand over after we said stop" is exactly the thing that was wrong.
+#[tokio::test]
+async fn pausing_stops_the_transfer_almost_immediately() {
+    let total = 32 * 1024 * 1024;
+    let data = payload(total);
+    let server = common::start(data).await;
+    let dir = TempDir::new();
+
+    // The body trickles out with a wait before each piece, which is what a
+    // real connection does and what a local server otherwise never does. A
+    // client that only reads the pause flag between chunks cannot react until
+    // the next piece lands; one that can be woken mid-wait stops at once.
+    server.state.trickle(1500);
+
+    let engine = engine_with(Settings::default());
+
+    let id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "big.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.downloaded_bytes).unwrap_or(0) > 512 * 1024
+        })
+        .await,
+        "download never got going"
+    );
+
+    let asked_at = std::time::Instant::now();
+    engine.pause(&id).unwrap();
+
+    let e = engine.clone();
+    let i3 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(20), move || {
+            e.get(&i3).map(|i| i.status) == Some(DownloadStatus::Paused)
+        })
+        .await,
+        "pause never took effect"
+    );
+    let took = asked_at.elapsed();
+
+    // Well inside the 1500ms the server waits between pieces, so this passes
+    // only if the pause interrupted the wait rather than queueing behind it.
+    // Generous enough not to flake on a loaded runner, and nowhere near the
+    // delay it has to beat.
+    assert!(
+        took < Duration::from_millis(700),
+        "pause took {took:?}: the transfer waited for the next chunk instead of stopping"
+    );
+}

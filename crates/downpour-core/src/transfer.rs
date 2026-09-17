@@ -78,9 +78,17 @@ pub enum PauseReason {
 
 /// Pause/cancel signalling, checked between chunks so it takes effect in
 /// milliseconds without tearing a write.
+///
+/// The flag alone was not enough. A worker spends nearly all its time parked in
+/// `stream.next()` waiting for the network, and a flag is only read once that
+/// returns -- so a pause was not felt until the next chunk arrived, on every
+/// connection at once, and the transfer trickled on for seconds after the user
+/// asked it to stop. `notify` makes the wait itself interruptible: setting the
+/// flag wakes every worker immediately, whether or not any data ever comes.
 #[derive(Debug, Clone, Default)]
 pub struct Control {
     flag: Arc<AtomicU8>,
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl Control {
@@ -89,6 +97,7 @@ impl Control {
     }
     pub fn pause(&self) {
         self.flag.store(CONTROL_PAUSE, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
     /// Stops the transfer the way a closed window or a shutdown does. It ends
     /// with the same `Error::Paused`; only `pause_reason` tells the two apart,
@@ -104,6 +113,7 @@ impl Control {
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
+        self.notify.notify_waiters();
     }
     /// `Parked` only when the engine parked this transfer. Anything else --
     /// including a flag that has since been reset -- counts as the user's own
@@ -116,6 +126,7 @@ impl Control {
     }
     pub fn cancel(&self) {
         self.flag.store(CONTROL_CANCEL, Ordering::SeqCst);
+        self.notify.notify_waiters();
     }
     pub fn reset(&self) {
         self.flag.store(CONTROL_RUN, Ordering::SeqCst);
@@ -123,6 +134,23 @@ impl Control {
     pub fn is_stopped(&self) -> bool {
         self.flag.load(Ordering::Relaxed) != CONTROL_RUN
     }
+    /// Resolves as soon as the transfer is asked to stop, and never otherwise.
+    ///
+    /// Raced against a read in the chunk loops, so a pause interrupts the wait
+    /// for data rather than queueing behind it. The `notified()` future is
+    /// created *before* the flag is read: built afterwards, a stop landing
+    /// between the two would be missed and the worker would wait for a wake-up
+    /// that had already happened.
+    async fn stopped(&self) {
+        loop {
+            let waiter = self.notify.notified();
+            if self.is_stopped() {
+                return;
+            }
+            waiter.await;
+        }
+    }
+
     /// `Ok(())` while running, otherwise the error the transfer should end with.
     fn check(&self) -> Result<()> {
         match self.flag.load(Ordering::Relaxed) {
@@ -830,8 +858,20 @@ async fn stream_range(
     let mut cursor = start;
     let mut stream = response.bytes_stream();
 
-    while let Some(chunk) = stream.next().await {
-        ctx.control.check()?;
+    loop {
+        // Racing the read means a pause lands now rather than whenever the
+        // next chunk happens to arrive -- which on a stalled connection could
+        // be never. `biased` so a stop already asked for wins over data that
+        // arrived in the same instant.
+        let next = tokio::select! {
+            biased;
+            () = ctx.control.stopped() => {
+                ctx.control.check()?;
+                break;
+            }
+            next = stream.next() => next,
+        };
+        let Some(chunk) = next else { break };
         let chunk = chunk?;
         if chunk.is_empty() {
             continue;
@@ -846,7 +886,16 @@ async fn stream_range(
         let allowed = (current_end - cursor + 1) as usize;
         let take = chunk.len().min(allowed);
 
-        ctx.limiter.acquire(take as u64).await;
+        // Same reasoning as the read: under a speed limit this sleeps, and a
+        // pause must not have to wait for that sleep to finish.
+        tokio::select! {
+            biased;
+            () = ctx.control.stopped() => {
+                ctx.control.check()?;
+                break;
+            }
+            () = ctx.limiter.acquire(take as u64) => {}
+        }
 
         file.write_all(&chunk[..take])
             .await
@@ -925,10 +974,27 @@ async fn plain_transfer(
     let mut written = 0u64;
     let mut stream = response.bytes_stream();
     let result = async {
-        while let Some(chunk) = stream.next().await {
-            ctx.control.check()?;
+        loop {
+            let next = tokio::select! {
+                biased;
+                () = ctx.control.stopped() => {
+                    ctx.control.check()?;
+                    break;
+                }
+                next = stream.next() => next,
+            };
+            let Some(chunk) = next else { break };
             let chunk = chunk?;
-            ctx.limiter.acquire(chunk.len() as u64).await;
+            // Under a speed limit this sleeps, and sleeping through a pause is
+            // the same bug in a different place.
+            tokio::select! {
+                biased;
+                () = ctx.control.stopped() => {
+                    ctx.control.check()?;
+                    break;
+                }
+                () = ctx.limiter.acquire(chunk.len() as u64) => {}
+            }
             file.write_all(&chunk).await.map_err(Error::PlainIo)?;
             written += chunk.len() as u64;
             ctx.progress.downloaded.store(written, Ordering::Relaxed);
