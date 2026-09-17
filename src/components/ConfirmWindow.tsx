@@ -17,7 +17,7 @@
  */
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Download, FolderOpen, X } from "lucide-react";
+import { Download, FolderOpen, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../lib/api";
 import { FileTile } from "../lib/filetypes";
@@ -96,38 +96,44 @@ export function ConfirmWindow() {
     });
   }, []);
 
-  const start = useCallback(async () => {
-    if (!pending || busy) return;
-    setBusy(true);
-    try {
-      await api.addDownload({
-        url: pending.url,
-        filename: pending.filename,
-        destDir: destDir.trim() || null,
-        connections: null,
-        startMode: "start",
-        checksum: null,
-        // The browser's session, carried across verbatim. Without these a
-        // login-gated file arrives as the login page instead of the file.
-        headers: pending.headers,
-        source: pending.source ?? "extension",
-      });
-      answer();
-    } finally {
-      setBusy(false);
-    }
-  }, [pending, destDir, busy, answer]);
+  // Taking the download, either straight away or into the list to start later.
+  // "Later" matters for the case this panel exists to catch: a queue of large
+  // files where you want the link kept but not the bandwidth spent now.
+  const take = useCallback(
+    async (startMode: "start" | "addonly") => {
+      if (!pending || busy) return;
+      setBusy(true);
+      try {
+        await api.addDownload({
+          url: pending.url,
+          filename: pending.filename,
+          destDir: destDir.trim() || null,
+          connections: null,
+          startMode,
+          checksum: null,
+          // The browser's session, carried across verbatim. Without these a
+          // login-gated file arrives as the login page instead of the file.
+          headers: pending.headers,
+          source: pending.source ?? "extension",
+        });
+        answer();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [pending, destDir, busy, answer],
+  );
 
   // Enter takes it, Escape declines. A question this small should not need the
   // mouse, and the window takes focus precisely so these work.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Enter") void start();
+      if (e.key === "Enter") void take("start");
       if (e.key === "Escape") answer();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [start, answer]);
+  }, [take, answer]);
 
   if (!pending) return null;
 
@@ -156,7 +162,7 @@ export function ConfirmWindow() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 py-3">
+      <div className="flex min-h-0 flex-1 flex-col justify-center gap-3 px-4 py-3">
         <div className="flex items-center gap-3">
           <FileTile filename={name} />
           <div className="min-w-0">
@@ -186,16 +192,23 @@ export function ConfirmWindow() {
         </div>
       </div>
 
-      <footer className="flex items-center justify-end gap-2 border-t border-[var(--border-subtle)] px-4 py-3">
-        <Button onClick={answer}>Don't download</Button>
-        <Button
-          variant="primary"
-          disabled={busy}
-          onClick={() => void start()}
-          icon={<Download size={14} />}
-        >
-          Download
+      <footer className="flex items-center justify-between gap-2 border-t border-[var(--border-subtle)] px-4 py-2.5">
+        <Button variant="ghost" onClick={answer}>
+          Cancel
         </Button>
+        <div className="flex items-center gap-2">
+          <Button disabled={busy} onClick={() => void take("addonly")} icon={<Plus size={14} />}>
+            Add to list
+          </Button>
+          <Button
+            variant="primary"
+            disabled={busy}
+            onClick={() => void take("start")}
+            icon={<Download size={14} />}
+          >
+            Download
+          </Button>
+        </div>
       </footer>
     </div>
   );

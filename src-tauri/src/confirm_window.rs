@@ -39,7 +39,10 @@ pub fn open(app: &AppHandle) -> tauri::Result<()> {
         WebviewUrl::App("index.html?view=confirm".into()),
     )
     .title("Downpour")
-    .inner_size(460.0, 320.0)
+    // Sized to its contents. It was taller than what it holds, which left a
+    // band of empty panel under the destination and made a small question look
+    // like an unfinished window.
+    .inner_size(460.0, 258.0)
     .resizable(false)
     // It is a question, and it is answered with the keyboard as often as with
     // the mouse, so it has to be in front and it has to take focus.

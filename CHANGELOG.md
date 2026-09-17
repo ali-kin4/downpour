@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-09-17
+
+### Changed
+
+- **The capture prompt offers a third answer: add it to the list without
+  starting it.** Download, Add to list, Cancel. The middle one is the case the
+  prompt exists to catch -- a link worth keeping when the bandwidth is not
+  worth spending yet, which previously meant taking the download and
+  immediately pausing it.
+
+- **The prompt is sized to what it holds.** It was taller than its contents,
+  leaving a band of empty panel under the destination that made a small
+  question look like an unfinished window.
+
 ## [1.5.0] - 2026-09-17
 
 ### Fixed
@@ -643,7 +657,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.1
 [1.5.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.0
 [1.4.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.4.0
 [1.3.3]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.3
