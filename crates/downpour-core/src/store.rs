@@ -786,6 +786,11 @@ mod tests {
         let back = s.load_settings().unwrap();
         assert_eq!(back.max_concurrent_downloads, 1);
         assert_eq!(back.rpc_port, 47_113);
+        // A settings blob written before a field existed must pick up that
+        // field's real default, not its type's. Retention reading back as `0`
+        // here would mean "keep forever" on every existing install, which looks
+        // exactly like working software and prunes nothing for anyone.
+        assert_eq!(back.history_retention_days, 90);
     }
 
     #[test]

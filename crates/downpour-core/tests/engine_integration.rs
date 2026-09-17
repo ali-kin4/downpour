@@ -2120,4 +2120,12 @@ async fn a_database_from_before_the_history_column_still_opens() {
         ))
         .unwrap();
     assert!(engine.get(&fresh).unwrap().sequence > 7);
+
+    // Opening it a second time is the half of the migration that has teeth.
+    // `ALTER TABLE ADD COLUMN` is not repeatable, so if the version stamp did
+    // not commit alongside it the next launch would die on "duplicate column
+    // name" — and every launch after that, with the app simply never starting.
+    drop(engine);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(reopened.load_removed().unwrap()[0].id, "old");
 }
