@@ -10,7 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:frontend": "node src/store/columns.test.mjs",
+    "test:frontend": "node src/store/columns.test.mjs && node src/lib/release-notes.test.mjs",
     "tauri": "tauri",
     "app:dev": "tauri dev",
     "app:build": "tauri build"

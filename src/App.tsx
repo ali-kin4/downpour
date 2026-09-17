@@ -55,13 +55,21 @@ export function App() {
         let seen: string | null = null;
         try {
           seen = window.localStorage.getItem(KEY);
-          window.localStorage.setItem(KEY, version);
         } catch {
           // Private window, or storage blocked. Skipping the notes is the only
           // sensible failure: showing them on every launch is worse than never.
           return;
         }
-        if (seen && seen !== version && notesFor(version)) {
+        // Nothing written for this version: leave the remembered one alone.
+        // Marking it seen would spend the one upgrade this version gets on a
+        // window that was never opened, and the notes could not bring it back.
+        if (!notesFor(version)) return;
+        try {
+          window.localStorage.setItem(KEY, version);
+        } catch {
+          return;
+        }
+        if (seen && seen !== version) {
           useApp.getState().setWhatsNewOpen(true);
         }
       })

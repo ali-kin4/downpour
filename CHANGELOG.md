@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **What's new shows the version you are actually running.** It had been stuck
+  on 1.2.1 since that release: the notes shown in the app live in their own
+  file, separate from this one, and eight releases went out without it being
+  touched. The window falls back to the newest notes it has when the running
+  version has none, so it announced 1.2.1 under a 1.5.1 app and listed
+  everything else as an earlier release -- and the prompt that opens it after an
+  upgrade waits for those same notes, so the one thing that would have made the
+  staleness obvious never appeared either. The missing eight releases are
+  written up, and a test now fails if the version in the manifests has no notes
+  or is not the newest entry.
+
+- **An upgrade to a version with no notes no longer spends its own prompt.**
+  The version was recorded as seen before anything was shown, so the window
+  could never be offered for it again.
+
 ## [1.5.1] - 2026-09-17
 
 ### Changed

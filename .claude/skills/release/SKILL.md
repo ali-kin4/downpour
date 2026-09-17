@@ -57,6 +57,22 @@ mistyped heading produces a release with empty notes.
 Write for the person who hit the bug: what went wrong from their side, then what
 changed. Not the diff.
 
+## 3b. What's new, in the app
+
+`src/lib/release-notes.ts` is the changelog's plain-language twin, and it is the
+step that actually gets forgotten: eight releases went out without it, so the
+app said 1.5.1 while What's new said 1.2.1 and the after-upgrade prompt never
+opened. Nothing failed — the window just told a lie that nobody was shown.
+
+Add the release at the **top** of `RELEASES`: the newest entry is `RELEASES[0]`
+by position, so notes appended to the bottom fix nothing. Two lines is plenty,
+and no internals in them — this is read by whoever uses Downpour, not whoever
+reads the diff.
+
+`npm run test:frontend` fails if the version in the manifests has no entry, or
+if the entry is not first. That is step 0's gate, so a forgotten entry cannot
+reach a tag.
+
 ## 4. Build the frontend *before* the app
 
 ```bash
