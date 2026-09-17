@@ -74,15 +74,7 @@ jobs:
           # was already named from the tag, so without this the file said one
           # version and the manifest Chrome reads said another -- and the one
           # users can actually see is the manifest.
-          node -e "
-            const fs = require('fs');
-            const p = 'extension/manifest.json';
-            const m = JSON.parse(fs.readFileSync(p, 'utf8'));
-            m.version = process.env.EXT_VERSION;
-            fs.writeFileSync(p, JSON.stringify(m, null, 2) + '
-');
-            console.log('extension manifest stamped ' + m.version);
-          "
+          node -e "const fs=require('fs'), p='extension/manifest.json', m=JSON.parse(fs.readFileSync(p,'utf8')); m.version=process.env.EXT_VERSION; fs.writeFileSync(p, JSON.stringify(m,null,2)); console.log('extension manifest stamped '+m.version)"
           for f in extension/*.js; do node --check "$f"; done
           # README.md is included deliberately: it is the load-unpacked and
           # pairing guide, and it is the first thing someone opening this zip
