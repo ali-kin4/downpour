@@ -128,8 +128,19 @@ impl Engine {
             Duration::from_secs(settings.request_timeout_secs),
         )?;
 
-        let loaded = store.load_all()?;
-        let next_sequence = loaded.iter().map(|i| i.sequence).max().unwrap_or(0) + 1;
+        // Retention is enforced here rather than on a timer: the history only
+        // grows when the user removes something, so the one moment it is
+        // certainly worth checking is the moment the app opens.
+        if let Err(e) = prune_history(&store, &settings) {
+            // A history that failed to prune is untidy; a launch that failed
+            // because of it is not recoverable by the user.
+            tracing::warn!(error = %e, "could not prune the download history");
+        }
+
+        let loaded = store.load_active()?;
+        // Past every row in the table, removed ones included, so restoring a
+        // history entry cannot land on a position already taken.
+        let next_sequence = store.max_sequence()? + 1;
         let items: HashMap<DownloadId, DownloadItem> =
             loaded.into_iter().map(|i| (i.id.clone(), i)).collect();
 
@@ -288,6 +299,7 @@ impl Engine {
                 started_at: None,
                 completed_at: None,
                 elapsed_ms: 0,
+                removed_at: None,
             };
 
             self.inner.store.upsert(&item)?;
@@ -447,13 +459,18 @@ impl Engine {
         self.set_status(id, DownloadStatus::Cancelled, None)
     }
 
-    /// Removes a download from the list, optionally deleting what it wrote.
+    /// Takes a download out of the list, optionally deleting what it wrote.
+    ///
+    /// The row itself is kept and stamped, not deleted. Deleting it is how a
+    /// user came to lose track of nine downloads with nothing left to say they
+    /// had ever existed — not even a log line. It now moves to the history,
+    /// where it can be looked at, restored, or forgotten deliberately.
     pub fn remove(&self, id: &str, delete_files: bool) -> Result<()> {
         if let Some(run) = self.inner.running.read().get(id) {
             run.control.cancel();
         }
         let item = self.inner.items.write().remove(id);
-        self.inner.store.delete(id)?;
+        self.inner.store.mark_removed(id, now_unix())?;
 
         if let Some(item) = item {
             if delete_files {
@@ -465,14 +482,77 @@ impl Engine {
                     let _ = std::fs::remove_file(item.target_path());
                 }
             } else if item.status != DownloadStatus::Completed {
-                // An unfinished part file with no list entry is orphaned junk;
-                // the sidecar alone is worthless without it.
+                // A part file the user is no longer waiting on is bytes we have
+                // chosen not to keep, and the sidecar alone is worthless
+                // without it. What used to make this uncomfortable was that the
+                // list entry went too, leaving no trace of either; the history
+                // row now records what the file was and where it was going.
                 let _ = std::fs::remove_file(item.meta_path());
                 let _ = std::fs::remove_file(item.part_path());
             }
+            tracing::info!(
+                id,
+                filename = %item.filename,
+                status = ?item.status,
+                delete_files,
+                "moved a download to the history"
+            );
         }
         self.emit(EngineEvent::Removed { id: id.to_string() });
         Ok(())
+    }
+
+    // -- History -----------------------------------------------------------
+
+    /// Everything the user has taken out of the list, most recently removed
+    /// first.
+    ///
+    /// Read straight from the store rather than held in memory: the history is
+    /// only looked at when someone goes looking for it, and it has no upper
+    /// bound the way the active list effectively does.
+    pub fn history(&self) -> Result<Vec<DownloadItem>> {
+        self.inner.store.load_removed()
+    }
+
+    /// Puts a history entry back in the active list, exactly as it was.
+    ///
+    /// The status comes back through the store's own loading rules, so an entry
+    /// removed mid-transfer returns as `Paused` rather than claiming to be
+    /// running. Whether its bytes are still on disk is a separate question: a
+    /// removal that deleted the part file will download again from zero.
+    pub fn restore(&self, id: &str) -> Result<DownloadItem> {
+        if !self.inner.store.restore(id)? {
+            return Err(Error::NotFound(id.into()));
+        }
+        let item = self
+            .inner
+            .store
+            .load_active()?
+            .into_iter()
+            .find(|i| i.id == id)
+            .ok_or_else(|| Error::NotFound(id.into()))?;
+
+        self.inner
+            .items
+            .write()
+            .insert(item.id.clone(), item.clone());
+        self.emit(EngineEvent::Added {
+            item: Box::new(item.clone()),
+        });
+        Ok(item)
+    }
+
+    /// Deletes one history entry for good. Files on disk are untouched.
+    pub fn forget(&self, id: &str) -> Result<()> {
+        if !self.inner.store.forget(id)? {
+            return Err(Error::NotFound(id.into()));
+        }
+        Ok(())
+    }
+
+    /// Applies the retention setting now, and reports how many entries went.
+    pub fn prune_history(&self) -> Result<usize> {
+        prune_history(&self.inner.store, &self.inner.settings.read().clone())
     }
 
     // -- Bulk actions ------------------------------------------------------
@@ -508,7 +588,8 @@ impl Engine {
         Ok(ids.len())
     }
 
-    /// Clears finished rows from the list. Files on disk are untouched.
+    /// Clears finished rows from the list. Files on disk are untouched, and the
+    /// rows themselves move to the history rather than being deleted.
     pub fn clear_completed(&self) -> Result<usize> {
         self.clear_statuses(&[DownloadStatus::Completed])
     }
@@ -522,8 +603,17 @@ impl Engine {
         ])
     }
 
+    /// One click here used to delete an arbitrary number of rows outright,
+    /// which is the likeliest way for a whole batch of downloads to vanish
+    /// without anybody deciding it one at a time. They go to the history now.
     fn clear_statuses(&self, statuses: &[DownloadStatus]) -> Result<usize> {
-        let removed = self.inner.store.delete_by_status(statuses)?;
+        let removed = self
+            .inner
+            .store
+            .mark_removed_by_status(statuses, now_unix())?;
+        if !removed.is_empty() {
+            tracing::info!(count = removed.len(), "cleared rows into the history");
+        }
         let mut items = self.inner.items.write();
         for id in &removed {
             items.remove(id);
@@ -1388,6 +1478,31 @@ impl Engine {
         tracing::info!(created = created.len(), "first-run folder setup complete");
         Ok(created)
     }
+}
+
+/// Drops history entries older than the retention setting allows.
+///
+/// A free function because it runs during `with_store`, before an `Engine`
+/// exists to call a method on.
+///
+/// `0` days means "keep forever" and returns before a cutoff is ever computed.
+/// Treating it as a zero-day retention instead would make the first launch
+/// after upgrading delete the entire history, which is the one outcome this
+/// whole feature exists to prevent.
+fn prune_history(store: &Store, settings: &Settings) -> Result<usize> {
+    if settings.history_retention_days == 0 {
+        return Ok(0);
+    }
+    let cutoff = now_unix() - i64::from(settings.history_retention_days) * 86_400;
+    let pruned = store.prune_removed(cutoff)?;
+    if pruned > 0 {
+        tracing::info!(
+            count = pruned,
+            days = settings.history_retention_days,
+            "pruned expired history entries"
+        );
+    }
+    Ok(pruned)
 }
 
 /// Whether a directory tree contains any actual file, ignoring empty folders.

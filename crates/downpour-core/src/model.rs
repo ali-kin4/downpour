@@ -229,6 +229,15 @@ pub struct DownloadItem {
     /// average speed. Seconds would report `0` for anything that finishes
     /// quickly, which is precisely when the completion dialog appears.
     pub elapsed_ms: u64,
+    /// Unix seconds at which the user took this out of the list, or `None`
+    /// while it is still in it.
+    ///
+    /// Removing a download used to delete its row outright, so a user who
+    /// cleared their list had no way to find out what had been in it. The row
+    /// now survives with this stamped, which is what the history reads and what
+    /// retention prunes against.
+    #[serde(default)]
+    pub removed_at: Option<i64>,
 }
 
 impl DownloadItem {

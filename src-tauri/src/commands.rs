@@ -266,6 +266,28 @@ pub fn pause_many(state: State<'_, AppState>, ids: Vec<String>) -> CmdResult<usi
 }
 
 // ---------------------------------------------------------------------------
+// History
+// ---------------------------------------------------------------------------
+
+/// Everything the user has taken out of the list, most recently removed first.
+#[tauri::command]
+pub fn list_history(state: State<'_, AppState>) -> CmdResult<Vec<DownloadItem>> {
+    state.engine.history().map_err(err)
+}
+
+/// Puts a history entry back in the active list.
+#[tauri::command]
+pub fn restore_download(state: State<'_, AppState>, id: String) -> CmdResult<DownloadItem> {
+    state.engine.restore(&id).map_err(err)
+}
+
+/// Deletes one history entry for good. Files on disk are untouched.
+#[tauri::command]
+pub fn forget_download(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.engine.forget(&id).map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // Shell integration
 // ---------------------------------------------------------------------------
 
