@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-17
+
+### Fixed
+
+- **A download captured from the browser asks again.** In 1.4.0 it did nothing
+  at all: the panel that was supposed to ask had not been granted permission to
+  receive the app's events, and the download it was opened for was announced
+  before the panel existed to hear it. It opened, found nothing waiting, and
+  closed itself in the same instant. Since 1.4.0 also stopped the main window
+  asking, a captured download simply vanished.
+
+### Added
+
+- **Downloads you remove are kept.** Removing one from the list used to delete
+  every trace of it; there was no way to find out later what had been removed,
+  or to put one back. Removed downloads are now kept as history and can be
+  restored. They are forgotten after 90 days by default, or never, if you would
+  rather keep the lot.
+
+- **A box per download, from the tray.** The tray now lists what is currently
+  active; picking one opens a small always-on-top panel for that download alone
+  -- progress, speed, time left, and pause or resume. Several can be open at
+  once. A box stays put when its download finishes or fails, because the outcome
+  is the thing you opened it to see.
+
+- **Pair a browser with one click.** Settings -> Browser integration now opens a
+  one-minute window in which the extension collects the pairing key itself, so
+  there is no 64-character token to find, copy and paste. The key never appears
+  on screen or on a clipboard, which makes this the safer route as well as the
+  shorter one.
+
+- **Chrome's download bar can be hidden.** Chrome starts every download before
+  the extension can hand it over, so its bar appears for a moment and is then
+  taken away again. Off by default: it applies to the whole browser, so a
+  download deliberately sent to Chrome with the bypass key would lose its
+  progress bar too.
+
 ## [1.4.0] - 2026-09-17
 
 ### Changed
@@ -606,7 +643,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.0
 [1.4.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.4.0
 [1.3.3]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.3
 [1.3.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.3.2
