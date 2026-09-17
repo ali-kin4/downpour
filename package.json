@@ -1,7 +1,7 @@
 {
   "name": "downpour",
   "private": true,
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "A fast, modern download manager for Windows.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
@@ -11,6 +11,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test:frontend": "node src/store/columns.test.mjs && node src/lib/release-notes.test.mjs",
+    "release:prep": "node scripts/release-prep.mjs",
+    "prepare": "node scripts/install-hooks.mjs",
     "tauri": "tauri",
     "app:dev": "tauri dev",
     "app:build": "tauri build"

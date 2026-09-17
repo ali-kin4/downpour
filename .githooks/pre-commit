@@ -1,0 +1,35 @@
+#!/bin/sh
+# What the app says about itself, checked before the commit rather than after.
+#
+# The release notes shown in the app, the changelog and the four manifests are
+# one fact spread across six files. Nothing breaks when they disagree -- the
+# window just announces an older release than it is, which went unnoticed for
+# eight versions. This runs only when one of those files is staged, so ordinary
+# commits pay nothing for it.
+#
+# It is a warning gate, not a wall: mid-release there is a legitimate moment
+# where the manifests are bumped and the notes are not written yet. `--no-verify`
+# gets you through, and CI runs the same check on the branch and again on the
+# tag, so skipping it locally hides nothing.
+
+changed=$(git diff --cached --name-only)
+case "$changed" in
+  *package.json* | *Cargo.toml* | *tauri.conf.json* | *manifest.json* | *CHANGELOG.md* | *release-notes.ts*)
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+
+if ! node src/lib/release-notes.test.mjs; then
+  cat >&2 <<'MSG'
+
+The version, the changelog and the in-app release notes disagree.
+
+  npm run release:prep <x.y.z>   does the mechanical half
+  src/lib/release-notes.ts       is the half only you can write
+
+Commit anyway with --no-verify; CI runs this check regardless.
+MSG
+  exit 1
+fi

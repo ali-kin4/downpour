@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-09-17
+
 ### Fixed
 
 - **What's new shows the version you are actually running.** It had been stuck
@@ -23,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An upgrade to a version with no notes no longer spends its own prompt.**
   The version was recorded as seen before anything was shown, so the window
   could never be offered for it again.
+
+### Changed
+
+- **Releasing is one command and a gate, not a checklist.**
+  `npm run release:prep <x.y.z>` bumps the four manifests, refreshes
+  `Cargo.lock`, and moves `[Unreleased]` into a dated heading with its link
+  references -- then stops and fails, because the release notes shown in the app
+  are the one step it will not write for you. A pre-commit hook and both
+  workflows now run the same check, so the version, the changelog and What's new
+  can no longer disagree quietly. The publishing workflow in particular ran only
+  the Rust suite, which made the tag the one path that could not catch this.
 
 ## [1.5.1] - 2026-09-17
 
@@ -674,7 +687,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.2
 [1.5.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.1
 [1.5.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.0
 [1.4.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.4.0

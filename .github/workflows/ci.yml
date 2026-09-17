@@ -67,9 +67,10 @@ jobs:
             printf '<!doctype html><meta charset="utf-8"><title>Downpour</title>\n' > dist/index.html
           fi
 
-      # Pure arithmetic over the column store -- no DOM, no browser. It guards
-      # the one invariant the table cannot express in Rust: the grid never
-      # outgrows its container, or the header and the rows come apart.
+      # No DOM, no browser: arithmetic and manifests. Two invariants Rust cannot
+      # see -- the table's grid never outgrows its container, or the header and
+      # the rows come apart; and the version in the manifests has release notes
+      # written for it, or the app announces an older release than it is.
       - name: Frontend tests
         shell: bash
         run: |

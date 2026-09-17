@@ -40,6 +40,17 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: "1.5.2",
+    date: "2026-09-17",
+    notes: [
+      {
+        title: "This window tells you about the version you are running",
+        detail:
+          "It had been announcing 1.2.1 since 1.2.1 — eight releases arrived without it noticing, and everything you had actually been given sat in the list below as though it were older news. All eight are written up, so what you see here is the real history again.",
+      },
+    ],
+  },
+  {
     version: "1.5.1",
     date: "2026-09-17",
     notes: [

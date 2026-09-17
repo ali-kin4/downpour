@@ -39,6 +39,16 @@ jobs:
       - name: Run the test suite
         run: cargo test --workspace
 
+      # The frontend suite is the half that guards what the release *says* about
+      # itself: that the version being tagged has notes written for it in
+      # `release-notes.ts`, that they are the newest entry, and that CHANGELOG.md
+      # carries a matching heading -- the heading this workflow extracts release
+      # notes from a few steps below. Without this, the publishing path was the
+      # one path that could not catch a stale What's new, which is how the app
+      # shipped eight versions announcing 1.2.1.
+      - name: Run the frontend suite
+        run: npm run test:frontend
+
       # A direct `cargo tauri build` rather than tauri-apps/tauri-action.
       # tauri-action wants to own release creation itself, which would fight the
       # separate checksum, changelog-notes and prerelease steps below; and the

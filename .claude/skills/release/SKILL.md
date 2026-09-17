@@ -31,47 +31,45 @@ manifests — a version can be prepared and never shipped (1.2.1 was).
 - Fixes only → patch
 - New behaviour, or behaviour that visibly changes → minor
 
-## 2. Bump four files, and the lockfile
+## 2. Prepare it: `npm run release:prep <x.y.z>`
 
-```
-package.json  Cargo.toml  src-tauri/tauri.conf.json  extension/manifest.json
-```
+One command does everything mechanical, because six files that must agree by
+hand will not:
 
-Then `cargo update -p downpour --offline` to refresh `Cargo.lock`. Never edit
-the lockfile by hand.
+- `package.json`, `Cargo.toml`, `src-tauri/tauri.conf.json` and
+  `extension/manifest.json` — the extension manifest is bumped here too, even
+  though CI stamps it from the tag when packaging: the repo should not claim a
+  version it is not.
+- `Cargo.lock`, through `cargo update -p downpour --offline`. Never by hand.
+- `CHANGELOG.md`: moves whatever sits under `[Unreleased]` into
+  `## [x.y.z] - YYYY-MM-DD` and rewrites the link references at the bottom. The
+  release workflow extracts the notes by matching that heading exactly, so a
+  mistyped one produces a release with empty notes — which is why this is
+  generated rather than typed.
 
-The extension manifest is bumped here too, even though CI stamps it from the tag
-when packaging: the repo should not claim a version it is not.
+It refuses to run on an empty `[Unreleased]`: what is written there *is* the
+release. Write that entry first, for the person who hit the bug — what went
+wrong from their side, then what changed. Not the diff.
 
-## 3. Changelog
+Then it exits **non-zero on purpose**, with the one step it will not do for you.
 
-Add `## [x.y.z] - YYYY-MM-DD` above the previous entry, moving anything under
-`[Unreleased]` into it. Then update the link references at the bottom:
+## 3. Write what the app will say
 
-- point `[Unreleased]` at `compare/vx.y.z...HEAD`
-- add `[x.y.z]: .../releases/tag/vx.y.z`
+`src/lib/release-notes.ts` is what users read in Help → What's new. The script
+leaves it alone deliberately: seeding it from the changelog would turn a loud
+failure into a quiet wrong answer — diff-voiced text in a window written for
+people who do not read diffs. That is the bug this whole apparatus exists to
+prevent, so the last step stays human.
 
-The release workflow extracts the notes by matching `## [x.y.z]` exactly. A
-mistyped heading produces a release with empty notes.
+Add the release at the **top** of `RELEASES` — the newest entry is `RELEASES[0]`
+by position, so notes appended to the bottom fix nothing. Two lines per change
+is plenty, and no internals in either.
 
-Write for the person who hit the bug: what went wrong from their side, then what
-changed. Not the diff.
-
-## 3b. What's new, in the app
-
-`src/lib/release-notes.ts` is the changelog's plain-language twin, and it is the
-step that actually gets forgotten: eight releases went out without it, so the
-app said 1.5.1 while What's new said 1.2.1 and the after-upgrade prompt never
-opened. Nothing failed — the window just told a lie that nobody was shown.
-
-Add the release at the **top** of `RELEASES`: the newest entry is `RELEASES[0]`
-by position, so notes appended to the bottom fix nothing. Two lines is plenty,
-and no internals in them — this is read by whoever uses Downpour, not whoever
-reads the diff.
-
-`npm run test:frontend` fails if the version in the manifests has no entry, or
-if the entry is not first. That is step 0's gate, so a forgotten entry cannot
-reach a tag.
+`npm run test:frontend` is the gate: it fails if the manifests disagree, if the
+version has no notes, if they are not first, if the changelog heading or its
+links are missing, or if a note was pasted from the changelog. The same check
+runs in the pre-commit hook, in CI, and on the tag — so a forgotten entry can no
+longer reach a release. It reached eight.
 
 ## 4. Build the frontend *before* the app
 

@@ -110,5 +110,42 @@ for (const r of RELEASES) {
 // `notesFor` is given whatever the shell reports, which may carry a `v`.
 check("a leading v is tolerated", notesFor(`v${version}`)?.version === version, `v${version}`);
 
+// CHANGELOG.md is the other half of the same bump, and the release workflow
+// extracts the published notes by matching `## [x.y.z]` exactly -- so a
+// mistyped or missing heading produces a GitHub release with empty notes.
+const changelog = await readFile("CHANGELOG.md", "utf8");
+const heading = changelog
+  .split(/\r?\n/)
+  .find((l) => l.startsWith(`## [${version}] - `));
+check(
+  "the changelog has a heading for this version",
+  heading !== undefined && /^## \[[\d.]+\] - \d{4}-\d{2}-\d{2}$/.test(heading),
+  heading ?? `no "## [${version}] - <date>" heading`,
+);
+
+// The link references at the bottom are edited by hand, and produce dead links
+// when they are not. `[Unreleased]` comparing against the current version is
+// also the cheapest proof the release was finished rather than left half done.
+const REPO = "https://github.com/ali-kin4/downpour";
+check(
+  "the changelog links point at this version",
+  changelog.includes(`[Unreleased]: ${REPO}/compare/v${version}...HEAD`) &&
+    changelog.includes(`[${version}]: ${REPO}/releases/tag/v${version}`),
+  `compare/v${version}...HEAD`,
+);
+
+// Same release, two files, two voices: the changelog explains the change and
+// this file explains the difference it makes. Text that appears verbatim in
+// both means one was pasted into the other, and the pasted one is not written
+// for the person reading it.
+const pasted = (notesFor(version)?.notes ?? []).filter((n) =>
+  changelog.includes(n.detail.trim()),
+);
+check(
+  "the notes are written, not pasted from the changelog",
+  pasted.length === 0,
+  pasted.map((n) => n.title).join("; ") || `${notesFor(version)?.notes.length ?? 0} note(s)`,
+);
+
 console.log(failures === 0 ? "\nall passed" : `\n${failures} failed`);
 process.exit(failures === 0 ? 0 : 1);
