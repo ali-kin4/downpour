@@ -676,11 +676,7 @@ mod tests {
         assert!(!on(Some("extension"), StartMode::Schedule));
 
         // Switched off, the intercepted click just starts, as it used to.
-        assert!(!should_confirm(
-            Some("extension"),
-            StartMode::Start,
-            false
-        ));
+        assert!(!should_confirm(Some("extension"), StartMode::Start, false));
     }
 
     #[test]

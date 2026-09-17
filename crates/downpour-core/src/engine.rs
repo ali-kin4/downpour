@@ -1413,7 +1413,6 @@ fn directory_holds_files(dir: &std::path::Path) -> bool {
     false
 }
 
-
 /// Whether the sidecar beside `name` describes a download of `url`.
 ///
 /// The guard on adopting an orphaned part file. A sidecar that cannot be read,
