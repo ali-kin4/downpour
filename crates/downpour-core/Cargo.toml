@@ -28,6 +28,9 @@ percent-encoding.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+# The integration suite builds a pre-migration database by hand, which needs
+# the same SQLite the store uses.
+rusqlite.workspace = true
 tracing-subscriber.workspace = true
 axum = "0.8"
 tower = "0.5"

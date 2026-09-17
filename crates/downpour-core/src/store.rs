@@ -16,7 +16,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Incremented for every schema change; `migrate` applies each step in order.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// Every column `row_to_item` reads, in the order it reads them. Shared so the
+/// active list and the history list cannot drift apart: they differ only in
+/// their `WHERE` clause, and a column added to one but not the other would
+/// shift every index in the mapper.
+const ITEM_COLUMNS: &str = "id, url, final_url, filename, user_named, name_locked,
+     dest_dir, headers, status,
+     total_bytes, downloaded_bytes, connections, supports_range,
+     category, source, scheduled, error, checksum,
+     created_at, sequence, started_at, completed_at, elapsed_ms, removed_at";
 
 #[derive(Clone)]
 pub struct Store {
@@ -66,12 +76,22 @@ impl Store {
         Ok(())
     }
 
+    /// Applies every schema step the database has not seen yet.
+    ///
+    /// The whole thing runs in one transaction, version stamp included. Step 1
+    /// is idempotent by construction — every statement is `IF NOT EXISTS` — but
+    /// `ALTER TABLE ADD COLUMN` is not, so a process killed between applying a
+    /// step and stamping `user_version` would leave a database that refuses to
+    /// open ever again with "duplicate column name". `user_version` lives in
+    /// the file header and rolls back with everything else, so committing the
+    /// two together is what makes a half-applied migration impossible.
     fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock();
-        let current: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let current: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
 
         if current < 1 {
-            conn.execute_batch(
+            tx.execute_batch(
                 r#"
                 CREATE TABLE IF NOT EXISTS downloads (
                     id                TEXT PRIMARY KEY,
@@ -110,12 +130,37 @@ impl Store {
             )?;
         }
 
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        if current < 2 {
+            // Removing a download used to delete its row, which left a user who
+            // cleared the list with no record that the downloads had ever
+            // existed. The column is added in place rather than by rebuilding
+            // the table: this runs against a database holding someone's real
+            // queue, and a copy-and-swap risks all of it for a column every
+            // existing row is happy to leave empty. NULL means "still in the
+            // list", which is exactly what every pre-existing row is.
+            tx.execute_batch(
+                r#"
+                ALTER TABLE downloads ADD COLUMN removed_at INTEGER;
+                CREATE INDEX IF NOT EXISTS idx_downloads_removed ON downloads(removed_at);
+                "#,
+            )?;
+        }
+
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
         Ok(())
     }
 
     // -- Downloads ---------------------------------------------------------
 
+    /// Writes an item's live state.
+    ///
+    /// `removed_at` is deliberately absent from both halves of this statement.
+    /// It is owned by the removal and restore paths alone, so a progress tick
+    /// that lands after the user removed a running download — which is a
+    /// narrow but real race, the pump and the UI being different threads —
+    /// cannot resurrect the row into the active list. A fresh insert leaves the
+    /// column NULL, which is what a new download wants anyway.
     pub fn upsert(&self, item: &DownloadItem) -> Result<()> {
         let conn = self.conn.lock();
         conn.execute(
@@ -181,54 +226,21 @@ impl Store {
         Ok(())
     }
 
-    pub fn load_all(&self) -> Result<Vec<DownloadItem>> {
+    /// Everything still in the list. Rows the user removed are excluded; they
+    /// are reachable through [`Store::load_removed`].
+    pub fn load_active(&self) -> Result<Vec<DownloadItem>> {
+        self.query_items("WHERE removed_at IS NULL ORDER BY sequence ASC, created_at ASC")
+    }
+
+    /// The history: rows the user removed from the list, most recent first.
+    pub fn load_removed(&self) -> Result<Vec<DownloadItem>> {
+        self.query_items("WHERE removed_at IS NOT NULL ORDER BY removed_at DESC, sequence DESC")
+    }
+
+    fn query_items(&self, tail: &str) -> Result<Vec<DownloadItem>> {
         let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            r#"
-            SELECT id, url, final_url, filename, user_named, name_locked,
-                   dest_dir, headers, status,
-                   total_bytes, downloaded_bytes, connections, supports_range,
-                   category, source, scheduled, error, checksum,
-                   created_at, sequence, started_at, completed_at, elapsed_ms
-            FROM downloads
-            ORDER BY sequence ASC, created_at ASC
-            "#,
-        )?;
-        let rows = stmt.query_map([], |row| {
-            let dest: String = row.get(6)?;
-            let headers_raw: String = row.get(7)?;
-            let status_raw: String = row.get(8)?;
-            Ok(DownloadItem {
-                id: row.get(0)?,
-                url: row.get(1)?,
-                final_url: row.get(2)?,
-                filename: row.get(3)?,
-                user_named: row.get::<_, i64>(4)? != 0,
-                name_locked: row.get::<_, i64>(5)? != 0,
-                dest_dir: PathBuf::from(dest),
-                headers: serde_json::from_str::<BTreeMap<String, String>>(&headers_raw)
-                    .unwrap_or_default(),
-                // A status we do not recognise (a downgrade, a hand-edited row)
-                // becomes Paused rather than poisoning the whole load.
-                status: parse_status(&status_raw).unwrap_or(DownloadStatus::Paused),
-                total_bytes: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
-                downloaded_bytes: row.get::<_, i64>(10)? as u64,
-                speed_bps: 0,
-                eta_secs: None,
-                connections: row.get::<_, i64>(11)? as u8,
-                supports_range: row.get::<_, i64>(12)? != 0,
-                category: row.get(13)?,
-                source: row.get(14)?,
-                scheduled: row.get::<_, i64>(15)? != 0,
-                error: row.get(16)?,
-                checksum: row.get(17)?,
-                created_at: row.get(18)?,
-                sequence: row.get(19)?,
-                started_at: row.get(20)?,
-                completed_at: row.get(21)?,
-                elapsed_ms: row.get::<_, i64>(22)? as u64,
-            })
-        })?;
+        let mut stmt = conn.prepare(&format!("SELECT {ITEM_COLUMNS} FROM downloads {tail}"))?;
+        let rows = stmt.query_map([], row_to_item)?;
 
         let mut out = Vec::new();
         for r in rows {
@@ -237,16 +249,40 @@ impl Store {
         Ok(out)
     }
 
-    pub fn delete(&self, id: &str) -> Result<()> {
-        self.conn
-            .lock()
-            .execute("DELETE FROM downloads WHERE id = ?1", params![id])?;
-        Ok(())
+    /// The highest queue position ever handed out, removed rows included.
+    ///
+    /// Restoring a history entry puts its original `sequence` back, so the
+    /// counter has to clear every row in the table and not just the active
+    /// ones. Seeding it from the active list alone would let a download added
+    /// after a bulk clear collide with a row the user later restores, and the
+    /// two would then sort arbitrarily against each other.
+    pub fn max_sequence(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        let max: Option<i64> =
+            conn.query_row("SELECT MAX(sequence) FROM downloads", [], |r| r.get(0))?;
+        Ok(max.unwrap_or(0))
     }
 
-    /// Removes finished rows and returns the ids that went, so the caller can
-    /// emit a `Removed` event for each without re-querying.
-    pub fn delete_by_status(&self, statuses: &[DownloadStatus]) -> Result<Vec<String>> {
+    /// Moves one row into the history, stamped with the moment it left the list.
+    ///
+    /// A row already in the history is left alone: a stale multi-select or a
+    /// second `clear_finished` would otherwise re-stamp it and quietly extend
+    /// its retention past the point the user asked for.
+    pub fn mark_removed(&self, id: &str, at: i64) -> Result<bool> {
+        let n = self.conn.lock().execute(
+            "UPDATE downloads SET removed_at = ?2 WHERE id = ?1 AND removed_at IS NULL",
+            params![id, at],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Moves finished rows into the history and returns the ids that went, so
+    /// the caller can emit a `Removed` event for each without re-querying.
+    pub fn mark_removed_by_status(
+        &self,
+        statuses: &[DownloadStatus],
+        at: i64,
+    ) -> Result<Vec<String>> {
         if statuses.is_empty() {
             return Ok(Vec::new());
         }
@@ -257,16 +293,60 @@ impl Store {
             .map(|s| status_str(*s).to_string())
             .collect();
 
-        let sql = format!("SELECT id FROM downloads WHERE status IN ({placeholders})");
+        let sql = format!(
+            "SELECT id FROM downloads WHERE removed_at IS NULL AND status IN ({placeholders})"
+        );
         let mut stmt = conn.prepare(&sql)?;
         let ids: Vec<String> = stmt
             .query_map(rusqlite::params_from_iter(names.iter()), |r| r.get(0))?
             .collect::<std::result::Result<_, _>>()?;
         drop(stmt);
 
-        let sql = format!("DELETE FROM downloads WHERE status IN ({placeholders})");
-        conn.execute(&sql, rusqlite::params_from_iter(names.iter()))?;
+        let sql = format!(
+            "UPDATE downloads SET removed_at = ? WHERE removed_at IS NULL
+             AND status IN ({placeholders})"
+        );
+        let mut args: Vec<String> = vec![at.to_string()];
+        args.extend(names);
+        conn.execute(&sql, rusqlite::params_from_iter(args.iter()))?;
         Ok(ids)
+    }
+
+    /// Clears the removal stamp, putting the row back in the active list.
+    pub fn restore(&self, id: &str) -> Result<bool> {
+        let n = self.conn.lock().execute(
+            "UPDATE downloads SET removed_at = NULL WHERE id = ?1 AND removed_at IS NOT NULL",
+            params![id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Deletes a history entry for good.
+    ///
+    /// Deliberately refuses to touch an active row: "forget" is a history
+    /// action, and a caller that passed the wrong id would otherwise delete a
+    /// live download out from under the engine's in-memory list, which would
+    /// then happily write it back on the next progress tick.
+    pub fn forget(&self, id: &str) -> Result<bool> {
+        let n = self.conn.lock().execute(
+            "DELETE FROM downloads WHERE id = ?1 AND removed_at IS NOT NULL",
+            params![id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Drops history entries removed before `before` (unix seconds), and
+    /// reports how many went.
+    ///
+    /// Active rows carry a NULL `removed_at`, and no comparison against NULL is
+    /// ever true, so they cannot be caught by this no matter what cutoff is
+    /// passed.
+    pub fn prune_removed(&self, before: i64) -> Result<usize> {
+        let n = self.conn.lock().execute(
+            "DELETE FROM downloads WHERE removed_at < ?1",
+            params![before],
+        )?;
+        Ok(n)
     }
 
     // -- Settings ----------------------------------------------------------
@@ -336,6 +416,43 @@ impl Store {
     }
 }
 
+/// Builds an item from a row selected with [`ITEM_COLUMNS`].
+fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadItem> {
+    let dest: String = row.get(6)?;
+    let headers_raw: String = row.get(7)?;
+    let status_raw: String = row.get(8)?;
+    Ok(DownloadItem {
+        id: row.get(0)?,
+        url: row.get(1)?,
+        final_url: row.get(2)?,
+        filename: row.get(3)?,
+        user_named: row.get::<_, i64>(4)? != 0,
+        name_locked: row.get::<_, i64>(5)? != 0,
+        dest_dir: PathBuf::from(dest),
+        headers: serde_json::from_str::<BTreeMap<String, String>>(&headers_raw).unwrap_or_default(),
+        // A status we do not recognise (a downgrade, a hand-edited row)
+        // becomes Paused rather than poisoning the whole load.
+        status: parse_status(&status_raw).unwrap_or(DownloadStatus::Paused),
+        total_bytes: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
+        downloaded_bytes: row.get::<_, i64>(10)? as u64,
+        speed_bps: 0,
+        eta_secs: None,
+        connections: row.get::<_, i64>(11)? as u8,
+        supports_range: row.get::<_, i64>(12)? != 0,
+        category: row.get(13)?,
+        source: row.get(14)?,
+        scheduled: row.get::<_, i64>(15)? != 0,
+        error: row.get(16)?,
+        checksum: row.get(17)?,
+        created_at: row.get(18)?,
+        sequence: row.get(19)?,
+        started_at: row.get(20)?,
+        completed_at: row.get(21)?,
+        elapsed_ms: row.get::<_, i64>(22)? as u64,
+        removed_at: row.get(23)?,
+    })
+}
+
 fn status_str(s: DownloadStatus) -> &'static str {
     match s {
         DownloadStatus::Idle => "idle",
@@ -403,6 +520,7 @@ mod tests {
             started_at: Some(1_700_000_010),
             completed_at: None,
             elapsed_ms: 42_000,
+            removed_at: None,
         }
     }
 
@@ -410,7 +528,7 @@ mod tests {
     fn round_trips_a_download_including_headers() {
         let s = Store::open_in_memory().unwrap();
         s.upsert(&item("a", DownloadStatus::Queued)).unwrap();
-        let all = s.load_all().unwrap();
+        let all = s.load_active().unwrap();
         assert_eq!(all.len(), 1);
         let got = &all[0];
         assert_eq!(got.id, "a");
@@ -429,7 +547,7 @@ mod tests {
         updated.downloaded_bytes = 1000;
         s.upsert(&updated).unwrap();
 
-        let all = s.load_all().unwrap();
+        let all = s.load_active().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, DownloadStatus::Completed);
         assert_eq!(all[0].downloaded_bytes, 1000);
@@ -442,7 +560,7 @@ mod tests {
         let s = Store::open_in_memory().unwrap();
         s.upsert(&item("a", DownloadStatus::Running)).unwrap();
         s.upsert(&item("b", DownloadStatus::Probing)).unwrap();
-        let all = s.load_all().unwrap();
+        let all = s.load_active().unwrap();
         assert!(all.iter().all(|i| i.status == DownloadStatus::Paused));
     }
 
@@ -452,7 +570,7 @@ mod tests {
         s.upsert(&item("a", DownloadStatus::Completed)).unwrap();
         s.upsert(&item("b", DownloadStatus::Failed)).unwrap();
         s.upsert(&item("c", DownloadStatus::Idle)).unwrap();
-        let all = s.load_all().unwrap();
+        let all = s.load_active().unwrap();
         let by_id = |id: &str| all.iter().find(|i| i.id == id).unwrap().status;
         assert_eq!(by_id("a"), DownloadStatus::Completed);
         assert_eq!(by_id("b"), DownloadStatus::Failed);
@@ -460,35 +578,128 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_one_row() {
+    fn marking_removed_hides_a_row_without_deleting_it() {
         let s = Store::open_in_memory().unwrap();
         s.upsert(&item("a", DownloadStatus::Queued)).unwrap();
         s.upsert(&item("b", DownloadStatus::Queued)).unwrap();
-        s.delete("a").unwrap();
-        let all = s.load_all().unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].id, "b");
+        assert!(s.mark_removed("a", 1_700_000_500).unwrap());
+
+        let active = s.load_active().unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "b");
+
+        let history = s.load_removed().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, "a");
+        assert_eq!(history[0].removed_at, Some(1_700_000_500));
     }
 
     #[test]
-    fn delete_by_status_clears_finished_and_reports_ids() {
+    fn a_second_removal_does_not_restamp_the_first() {
+        // Re-stamping would silently extend retention every time a stale
+        // multi-select or a repeated "clear finished" swept the same row.
+        let s = Store::open_in_memory().unwrap();
+        s.upsert(&item("a", DownloadStatus::Completed)).unwrap();
+        assert!(s.mark_removed("a", 1_000).unwrap());
+        assert!(!s.mark_removed("a", 9_000).unwrap());
+        assert_eq!(s.load_removed().unwrap()[0].removed_at, Some(1_000));
+    }
+
+    #[test]
+    fn a_progress_write_cannot_resurrect_a_removed_row() {
+        // The pump persists from its own copy of the item, which still says
+        // "in the list". If upsert wrote removed_at, a tick landing just after
+        // the user removed a running download would put it straight back.
+        let s = Store::open_in_memory().unwrap();
+        let mut live = item("a", DownloadStatus::Running);
+        s.upsert(&live).unwrap();
+        s.mark_removed("a", 1_000).unwrap();
+
+        live.downloaded_bytes = 999;
+        s.upsert(&live).unwrap();
+
+        assert!(s.load_active().unwrap().is_empty());
+        assert_eq!(s.load_removed().unwrap()[0].downloaded_bytes, 999);
+    }
+
+    #[test]
+    fn restore_puts_a_row_back_and_forget_only_touches_history() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert(&item("a", DownloadStatus::Queued)).unwrap();
+
+        assert!(!s.forget("a").unwrap(), "an active row is not forgettable");
+        assert_eq!(s.load_active().unwrap().len(), 1);
+
+        s.mark_removed("a", 1_000).unwrap();
+        assert!(s.restore("a").unwrap());
+        assert_eq!(s.load_active().unwrap()[0].removed_at, None);
+        assert!(s.load_removed().unwrap().is_empty());
+
+        s.mark_removed("a", 1_000).unwrap();
+        assert!(s.forget("a").unwrap());
+        assert!(s.load_active().unwrap().is_empty());
+        assert!(s.load_removed().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pruning_cannot_reach_rows_that_are_still_in_the_list() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert(&item("live", DownloadStatus::Running)).unwrap();
+        s.upsert(&item("old", DownloadStatus::Completed)).unwrap();
+        s.mark_removed("old", 1_000).unwrap();
+
+        assert_eq!(s.prune_removed(i64::MAX).unwrap(), 1);
+        assert_eq!(s.load_active().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_sequence_counter_clears_removed_rows_too() {
+        let s = Store::open_in_memory().unwrap();
+        let mut high = item("a", DownloadStatus::Completed);
+        high.sequence = 41;
+        s.upsert(&high).unwrap();
+        s.mark_removed("a", 1_000).unwrap();
+        assert_eq!(
+            s.max_sequence().unwrap(),
+            41,
+            "a restored row would collide with whatever was added after it"
+        );
+    }
+
+    #[test]
+    fn mark_removed_by_status_clears_finished_and_reports_ids() {
         let s = Store::open_in_memory().unwrap();
         s.upsert(&item("done1", DownloadStatus::Completed)).unwrap();
         s.upsert(&item("done2", DownloadStatus::Completed)).unwrap();
         s.upsert(&item("live", DownloadStatus::Queued)).unwrap();
 
-        let mut removed = s.delete_by_status(&[DownloadStatus::Completed]).unwrap();
+        let mut removed = s
+            .mark_removed_by_status(&[DownloadStatus::Completed], 1_000)
+            .unwrap();
         removed.sort();
         assert_eq!(removed, vec!["done1", "done2"]);
-        assert_eq!(s.load_all().unwrap().len(), 1);
+        assert_eq!(s.load_active().unwrap().len(), 1);
+        assert_eq!(s.load_removed().unwrap().len(), 2);
+
+        // A second sweep finds nothing left to move, and leaves the original
+        // stamps alone.
+        assert!(s
+            .mark_removed_by_status(&[DownloadStatus::Completed], 9_000)
+            .unwrap()
+            .is_empty());
+        assert!(s
+            .load_removed()
+            .unwrap()
+            .iter()
+            .all(|i| i.removed_at == Some(1_000)));
     }
 
     #[test]
-    fn delete_by_status_with_no_statuses_is_a_no_op() {
+    fn mark_removed_by_status_with_no_statuses_is_a_no_op() {
         let s = Store::open_in_memory().unwrap();
         s.upsert(&item("a", DownloadStatus::Completed)).unwrap();
-        assert!(s.delete_by_status(&[]).unwrap().is_empty());
-        assert_eq!(s.load_all().unwrap().len(), 1);
+        assert!(s.mark_removed_by_status(&[], 1_000).unwrap().is_empty());
+        assert_eq!(s.load_active().unwrap().len(), 1);
     }
 
     #[test]
@@ -588,7 +799,7 @@ mod tests {
         b.sequence = 1;
         s.upsert(&a).unwrap();
         s.upsert(&b).unwrap();
-        let all = s.load_all().unwrap();
+        let all = s.load_active().unwrap();
         assert_eq!(all[0].id, "b", "oldest first");
         assert_eq!(all[1].id, "a");
     }

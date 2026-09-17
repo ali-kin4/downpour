@@ -159,6 +159,17 @@ pub struct Settings {
     pub categories: Vec<Category>,
     pub conflict_policy: ConflictPolicy,
 
+    // --- History ----------------------------------------------------------
+    /// How long a download removed from the list is kept in the history, in
+    /// days. `0` means forever, matching `speed_limit_bps`'s "0 is no limit".
+    ///
+    /// A record that grows without bound is its own problem — the whole point
+    /// of keeping removed rows is to answer "what happened to those nine
+    /// downloads?", and that question is asked days later, not years. Ninety
+    /// days is long enough to cover it and short enough that the table does not
+    /// become the largest thing the app owns.
+    pub history_retention_days: u32,
+
     // --- Scheduling -------------------------------------------------------
     pub schedule: Schedule,
     /// New downloads arrive scheduler-gated rather than starting immediately.
@@ -233,6 +244,7 @@ impl std::fmt::Debug for Settings {
             .field("sort_into_categories", &self.sort_into_categories)
             .field("categories", &self.categories.len())
             .field("conflict_policy", &self.conflict_policy)
+            .field("history_retention_days", &self.history_retention_days)
             .field("schedule", &self.schedule)
             .field("schedule_new_downloads", &self.schedule_new_downloads)
             .field("pause_outside_window", &self.pause_outside_window)
@@ -274,6 +286,7 @@ impl Default for Settings {
             sort_into_categories: true,
             categories: default_categories(),
             conflict_policy: ConflictPolicy::default(),
+            history_retention_days: 90,
             schedule: Schedule::default(),
             schedule_new_downloads: false,
             pause_outside_window: true,

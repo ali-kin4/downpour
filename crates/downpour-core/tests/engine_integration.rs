@@ -12,7 +12,7 @@ use downpour_core::model::{DownloadSpec, DownloadStatus, StartMode};
 use downpour_core::scheduler::{DaySet, LocalMoment, Schedule, ScheduleWindow};
 use downpour_core::settings::Settings;
 use downpour_core::store::Store;
-use downpour_core::{Engine, EngineEvent};
+use downpour_core::{Engine, EngineConfig, EngineEvent};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1756,4 +1756,368 @@ async fn pausing_stops_the_transfer_almost_immediately() {
         took < Duration::from_millis(700),
         "pause took {took:?}: the transfer waited for the next chunk instead of stopping"
     );
+}
+
+// ---------------------------------------------------------------------------
+// History
+// ---------------------------------------------------------------------------
+
+/// The exact `downloads` table as schema v1 wrote it, for building a database
+/// that predates the history column.
+///
+/// This is a fixture of history and must never be updated to track the current
+/// schema. The moment someone syncs it forward it stops exercising the
+/// migration and starts testing a fresh schema instead — which is the one thing
+/// that cannot protect the database already sitting on a user's disk.
+const V1_SCHEMA: &str = r#"
+    CREATE TABLE downloads (
+        id                TEXT PRIMARY KEY,
+        url               TEXT NOT NULL,
+        final_url         TEXT,
+        filename          TEXT NOT NULL,
+        user_named        INTEGER NOT NULL DEFAULT 0,
+        name_locked       INTEGER NOT NULL DEFAULT 0,
+        dest_dir          TEXT NOT NULL,
+        headers           TEXT NOT NULL DEFAULT '{}',
+        status            TEXT NOT NULL,
+        total_bytes       INTEGER,
+        downloaded_bytes  INTEGER NOT NULL DEFAULT 0,
+        connections       INTEGER NOT NULL DEFAULT 1,
+        supports_range    INTEGER NOT NULL DEFAULT 0,
+        category          TEXT,
+        source            TEXT,
+        scheduled         INTEGER NOT NULL DEFAULT 0,
+        error             TEXT,
+        checksum          TEXT,
+        created_at        INTEGER NOT NULL,
+        sequence          INTEGER NOT NULL DEFAULT 0,
+        started_at        INTEGER,
+        completed_at      INTEGER,
+        elapsed_ms        INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_downloads_status  ON downloads(status);
+    CREATE INDEX idx_downloads_created ON downloads(created_at DESC);
+    CREATE INDEX idx_downloads_seq     ON downloads(sequence);
+
+    CREATE TABLE kv (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+"#;
+
+fn engine_and_store(settings: Settings) -> (Engine, Store) {
+    let store = Store::open_in_memory().unwrap();
+    store.save_settings(&settings).unwrap();
+    (Engine::with_store(store.clone()).unwrap(), store)
+}
+
+/// Removing a download hides it from the list without destroying the record.
+///
+/// This is the whole point of the change: a user lost track of nine downloads
+/// because "remove from list" deleted the rows outright, leaving nothing to
+/// consult afterwards. The assertion is therefore on what survives — the URL
+/// and the destination, the two things you need to work out what happened —
+/// not merely on the list being shorter, which the old behaviour satisfied too.
+#[tokio::test]
+async fn removing_a_download_keeps_it_in_the_history() {
+    let server = common::start(payload(64 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+    let url = server.url("/file");
+
+    let id = engine
+        .add(spec(&url, &dir.0, "receipt.bin", StartMode::AddOnly))
+        .unwrap();
+    engine.remove(&id, false).unwrap();
+
+    assert!(engine.get(&id).is_none(), "still in the active list");
+    assert!(engine.list().is_empty());
+
+    let history = engine.history().unwrap();
+    assert_eq!(history.len(), 1, "the row was deleted, not kept");
+    assert_eq!(history[0].id, id);
+    assert_eq!(history[0].url, url, "the record cannot say what was lost");
+    assert_eq!(history[0].filename, "receipt.bin");
+    assert_eq!(history[0].dest_dir, dir.0);
+    assert!(
+        history[0].removed_at.is_some(),
+        "an entry with no removal time cannot be pruned or ordered"
+    );
+}
+
+/// Clearing finished rows sends them to the history too.
+///
+/// One click here takes an unbounded number of downloads out of the list at
+/// once, which is far likelier to be how a batch disappears than nine separate
+/// removals. It has to leave the same record behind.
+#[tokio::test]
+async fn clearing_finished_rows_sends_them_to_the_history() {
+    let server = common::start(payload(128 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+
+    let done_id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "done.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+    let idle_id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "idle.bin",
+            StartMode::AddOnly,
+        ))
+        .unwrap();
+
+    let e = engine.clone();
+    let d = done_id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&d).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await
+    );
+
+    assert_eq!(engine.clear_completed().unwrap(), 1);
+
+    let history = engine.history().unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, done_id);
+    assert_eq!(history[0].filename, "done.bin");
+    assert!(
+        engine.get(&idle_id).is_some(),
+        "an unfinished row must not be swept up"
+    );
+}
+
+/// Restoring puts the entry back exactly as it was, not as a fresh add.
+#[tokio::test]
+async fn restoring_a_history_entry_brings_it_back_intact() {
+    let server = common::start(payload(256 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+
+    let id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "keeper.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+
+    let e = engine.clone();
+    let i2 = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i2).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await
+    );
+    let before = engine.get(&id).unwrap();
+
+    engine.remove(&id, false).unwrap();
+    assert!(engine.get(&id).is_none());
+
+    let back = engine.restore(&id).unwrap();
+    assert_eq!(back.id, id);
+    assert_eq!(back.removed_at, None, "restored but still stamped removed");
+    assert_eq!(back.status, DownloadStatus::Completed);
+    assert_eq!(back.filename, before.filename);
+    assert_eq!(back.url, before.url);
+    assert_eq!(back.dest_dir, before.dest_dir);
+    assert_eq!(back.total_bytes, before.total_bytes);
+    assert_eq!(back.downloaded_bytes, before.downloaded_bytes);
+    assert_eq!(back.sequence, before.sequence);
+
+    assert!(engine.get(&id).is_some(), "not back in the active list");
+    assert_eq!(engine.list().len(), 1);
+    assert!(engine.history().unwrap().is_empty());
+
+    // A second restore has nothing left to restore.
+    assert!(engine.restore(&id).is_err());
+}
+
+/// Forgetting deletes one history entry and nothing else.
+#[tokio::test]
+async fn forgetting_removes_only_that_history_entry() {
+    let server = common::start(payload(16 * 1024)).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+
+    let gone = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "gone.bin",
+            StartMode::AddOnly,
+        ))
+        .unwrap();
+    let kept = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "kept.bin",
+            StartMode::AddOnly,
+        ))
+        .unwrap();
+    let live = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "live.bin",
+            StartMode::AddOnly,
+        ))
+        .unwrap();
+    engine.remove(&gone, false).unwrap();
+    engine.remove(&kept, false).unwrap();
+
+    engine.forget(&gone).unwrap();
+    let history = engine.history().unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, kept);
+
+    // An id that is still in the list is not a history entry, and forgetting
+    // it must not quietly delete a live download.
+    assert!(engine.forget(&live).is_err());
+    assert!(engine.get(&live).is_some());
+}
+
+/// Retention drops what has aged out on the next launch, and keeps the rest.
+///
+/// Driven by rebuilding the engine over the same database, because that is the
+/// only moment pruning runs: opening the app.
+#[tokio::test]
+async fn retention_prunes_expired_history_on_startup() {
+    let server = common::start(payload(16 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.history_retention_days = 30;
+    let (engine, store) = engine_and_store(settings);
+    let url = server.url("/file");
+
+    let stale = engine
+        .add(spec(&url, &dir.0, "stale.bin", StartMode::AddOnly))
+        .unwrap();
+    let recent = engine
+        .add(spec(&url, &dir.0, "recent.bin", StartMode::AddOnly))
+        .unwrap();
+    let live = engine
+        .add(spec(&url, &dir.0, "live.bin", StartMode::AddOnly))
+        .unwrap();
+
+    // Stamped through the store so the ages are exact; going through the engine
+    // would only ever produce entries removed a moment ago.
+    let now = downpour_core::resume::now_unix();
+    store.mark_removed(&stale, now - 60 * 86_400).unwrap();
+    store.mark_removed(&recent, now - 5 * 86_400).unwrap();
+
+    let reopened = Engine::with_store(store.clone()).unwrap();
+    let history = reopened.history().unwrap();
+    assert_eq!(
+        history.len(),
+        1,
+        "expected only the recent entry: {:?}",
+        history.iter().map(|i| &i.filename).collect::<Vec<_>>()
+    );
+    assert_eq!(history[0].id, recent);
+    assert!(
+        reopened.get(&live).is_some(),
+        "pruning reached a row that was still in the list"
+    );
+}
+
+/// `0` days means keep forever, and must not be read as "expire immediately".
+///
+/// Getting this backwards would make the first launch after the upgrade delete
+/// the entire history, which is precisely the loss this feature exists to
+/// prevent.
+#[tokio::test]
+async fn a_retention_of_zero_keeps_history_forever() {
+    let server = common::start(payload(16 * 1024)).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.history_retention_days = 0;
+    let (engine, store) = engine_and_store(settings);
+
+    let id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "ancient.bin",
+            StartMode::AddOnly,
+        ))
+        .unwrap();
+    store.mark_removed(&id, 1).unwrap();
+
+    let reopened = Engine::with_store(store.clone()).unwrap();
+    assert_eq!(reopened.history().unwrap().len(), 1);
+    assert_eq!(reopened.prune_history().unwrap(), 0);
+}
+
+/// A database written before this change still opens, and keeps its rows.
+///
+/// The database this protects is the one on a user's disk right now, holding
+/// real downloads. It is built here from the verbatim v1 schema rather than by
+/// letting the current code create it, because a fresh database already has the
+/// new column: a test that starts from one proves the schema is self-consistent
+/// and nothing at all about the upgrade.
+#[tokio::test]
+async fn a_database_from_before_the_history_column_still_opens() {
+    let dir = TempDir::new();
+    let path = dir.join("downpour.db");
+
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO downloads
+                (id, url, filename, dest_dir, status, total_bytes, downloaded_bytes,
+                 created_at, sequence)
+             VALUES ('old', 'https://example.com/f.bin', 'f.bin', 'D:/dl',
+                     'completed', 1000, 1000, 1700000000, 7)",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 1i64).unwrap();
+    }
+
+    let engine = Engine::new(EngineConfig {
+        db_path: path.clone(),
+    })
+    .unwrap();
+
+    let all = engine.list();
+    assert_eq!(all.len(), 1, "the pre-existing row did not survive");
+    assert_eq!(all[0].id, "old");
+    assert_eq!(all[0].url, "https://example.com/f.bin");
+    assert_eq!(all[0].status, DownloadStatus::Completed);
+    assert_eq!(all[0].total_bytes, Some(1000));
+    assert_eq!(
+        all[0].removed_at, None,
+        "a row from before the change is still in the list, not in the history"
+    );
+    assert!(engine.history().unwrap().is_empty());
+
+    // The migrated database supports the new behaviour, not just the old rows.
+    engine.remove("old", false).unwrap();
+    assert!(engine.list().is_empty());
+    assert_eq!(engine.history().unwrap()[0].id, "old");
+
+    // A new download must not reuse a sequence a migrated row already holds.
+    let fresh = engine
+        .add(spec(
+            "https://example.com/g.bin",
+            &dir.0,
+            "g.bin",
+            StartMode::AddOnly,
+        ))
+        .unwrap();
+    assert!(engine.get(&fresh).unwrap().sequence > 7);
 }
