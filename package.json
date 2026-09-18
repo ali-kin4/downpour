@@ -10,7 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test:frontend": "node src/store/columns.test.mjs && node src/lib/release-notes.test.mjs",
+    "test:frontend": "node src/store/columns.test.mjs && node src/lib/release-notes.test.mjs && node extension/video-overlay.test.mjs",
     "release:prep": "node scripts/release-prep.mjs",
     "prepare": "node scripts/install-hooks.mjs",
     "tauri": "tauri",

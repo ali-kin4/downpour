@@ -48,8 +48,16 @@
  *   sites. Someone watching fullscreen is watching, not downloading.
  * - It does not appear over decorative background loops, DRM-protected
  *   players, tiny videos, or a poster with no media behind it.
+ * - It does not appear over a video that is a LINK TO ANOTHER PAGE. A feed
+ *   card's hover preview belongs to a page that is not the one in the address
+ *   bar, so the only thing the menu could probe is the feed itself.
  * - It does not talk to the network. Everything goes through the service
  *   worker, which owns the token and the port.
+ *
+ * THREE WAYS OFF, IN ESCALATING ORDER. The × next to the pill hides it until
+ * the page is loaded again and writes nothing down; the menu's footer offers
+ * the same thing in words, plus the two that persist — this site, and
+ * everywhere.
  *
  * SIZES AND QUALITIES: see the comment above `renderPanel`. Short version —
  * a file the browser can see the address of is measured directly, and for
@@ -107,6 +115,8 @@
   const state = {
     enabled: false, // global switch
     siteBlocked: false, // per-site switch
+    drmSite: false, // a site whose video is DRM-protected as a matter of course
+    dismissedOn: '', // the URL the user closed the pill on, '' if they have not
     configLoaded: false, // have we ever asked the worker?
     configPending: null, // in-flight request, so N videos ask once
     running: false, // listeners attached?
@@ -114,8 +124,10 @@
     shadow: null,
     pill: null,
     pillLabel: null,
+    closeButton: null,
     panel: null,
     wrap: null,
+    bar: null,
     active: null, // the <video> the pill currently belongs to
     hovered: null, // the <video> the pointer is over
     shown: false,
@@ -191,12 +203,22 @@
 
   /**
    * Encrypted Media Extensions. A DRM stream cannot be downloaded by anything,
-   * so a pill over one can only ever disappoint. `mediaKeys` is set by the
-   * page on the same DOM node we can see, so this reads correctly from the
-   * isolated world; it is wrapped anyway because a throwing getter here would
-   * take the whole overlay down.
+   * so a pill over one can only ever disappoint.
+   *
+   * TWO SIGNALS, BECAUSE `mediaKeys` ALONE IS A RACE. It only becomes truthy
+   * once the page's `setMediaKeys()` promise has resolved, and a player that
+   * shows its first frame before then would be judged downloadable and get a
+   * pill. The `encrypted` event fires as soon as the media itself declares it
+   * is protected — earlier, and once and for all — so that verdict is recorded
+   * in `protectedVideos` and never re-litigated. `mediaKeys` is kept as the
+   * second signal for a video that was already encrypted before this script
+   * started listening. It is read defensively because a throwing getter here
+   * would take the whole overlay down.
    */
+  const protectedVideos = new WeakSet();
+
   function isProtected(video) {
+    if (protectedVideos.has(video)) return true;
     try {
       return Boolean(video.mediaKeys);
     } catch (_) {
@@ -204,10 +226,45 @@
     }
   }
 
+  /**
+   * A video that is itself a LINK SOMEWHERE ELSE is a preview of another page,
+   * not the subject of this one — a YouTube feed card, a related-videos rail,
+   * a social timeline. Offering to download it is worse than useless: the
+   * probe would be run against the URL in the address bar, which is the feed,
+   * so the menu can only ever report that the feed has no video on it. (It
+   * costs a yt-dlp spawn to find that out, and every card on the page shares
+   * the one wrong answer, because the probe cache is keyed by page URL.)
+   *
+   * The comparison ignores the fragment only: a `?v=` or a `?t=` is exactly
+   * what distinguishes one video from another on the sites this is for.
+   */
+  function isLinkedPreview(video) {
+    if (!video.closest) return false;
+    // ANY <a>, NOT `a[href]`. YouTube's card link is `yt-simple-endpoint` — an
+    // anchor carrying no href at all, navigated by the page's own JavaScript —
+    // so the obvious selector walks straight past the very case this exists
+    // for. An anchor with no address of its own is still a card wrapper, and a
+    // video that is the subject of its own page is not inside one.
+    const anchor = video.closest('a');
+    if (!anchor) return false;
+    const href = anchor.getAttribute('href');
+    if (!href) return true;
+    let target;
+    try {
+      target = new URL(href, location.href);
+    } catch (_) {
+      return true; // an anchor we cannot read is still an anchor
+    }
+    if (target.protocol !== 'http:' && target.protocol !== 'https:') return true;
+    const here = location.origin + location.pathname + location.search;
+    return target.origin + target.pathname + target.search !== here;
+  }
+
   function eligible(video) {
     if (!video || !video.isConnected) return false;
     if (isDecorative(video)) return false;
     if (isProtected(video)) return false;
+    if (isLinkedPreview(video)) return false;
     return hasMedia(video);
   }
 
@@ -404,9 +461,28 @@
     }
   }
 
-  /** Both switches must say yes, and the answer must have actually arrived. */
+  /** Every switch must say yes, and the answer must have actually arrived. */
   function allowed() {
-    return state.running && state.configLoaded && state.enabled && !state.siteBlocked;
+    if (!state.running || !state.configLoaded) return false;
+    if (!state.enabled || state.siteBlocked || state.drmSite) return false;
+    return state.dismissedOn !== pageKey();
+  }
+
+  /** The page identity a dismissal is remembered against. Fragment excluded. */
+  function pageKey() {
+    return location.origin + location.pathname + location.search;
+  }
+
+  /**
+   * The close button. "Not on this page" — no preference written, nothing to
+   * undo later, gone until the page is loaded again. It is deliberately the
+   * weakest of the three off switches: the other two live in the menu and
+   * persist, and a user reaching for an × wants the thing in front of them
+   * gone, not a decision to make.
+   */
+  function dismiss() {
+    state.dismissedOn = pageKey();
+    hide();
   }
 
   function show(video, reason) {
@@ -580,10 +656,19 @@
 .wrap.dim { opacity: .28; }
 .wrap.dim:hover { opacity: 1; }
 
-.pill {
-  pointer-events: auto;
+/* Pill and close button on one right-aligned row, so the row's right edge is
+   the anchor the host is positioned at and the × never leaves the video. */
+.bar {
   position: absolute;
   top: 0; right: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pill {
+  pointer-events: auto;
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -609,6 +694,28 @@
 .pill.busy { filter: saturate(.5); cursor: progress; }
 .pill.done { background: #10b981; }
 .pill.failed { background: #dc2626; }
+
+.close {
+  pointer-events: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(16,18,31,.62);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  transition: background 120ms ease;
+}
+.close:hover { background: rgba(16,18,31,.86); }
+.close:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.close svg { width: 11px; height: 11px; display: block; }
 
 .panel {
   pointer-events: auto;
@@ -723,6 +830,10 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M12 3v11"/><path d="m7 10 5 5 5-5"/><path d="M4 20h16"/></svg>';
 
+  const CLOSE_ICON =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true">' +
+    '<path d="M5 5l14 14"/><path d="M19 5L5 19"/></svg>';
+
   function ensureHost() {
     if (state.host) return;
 
@@ -754,12 +865,24 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     label.textContent = 'Download';
     pill.appendChild(label);
 
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'close';
+    close.title = 'Hide the download button on this page';
+    close.setAttribute('aria-label', 'Hide the download button on this page');
+    close.innerHTML = CLOSE_ICON;
+
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.appendChild(pill);
+    bar.appendChild(close);
+
     const panel = document.createElement('div');
     panel.className = 'panel';
     panel.setAttribute('role', 'menu');
     panel.hidden = true;
 
-    wrap.appendChild(pill);
+    wrap.appendChild(bar);
     wrap.appendChild(panel);
     shadow.appendChild(wrap);
 
@@ -772,6 +895,17 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     });
     pill.addEventListener('pointerdown', (e) => e.stopPropagation());
     pill.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    // Same reasoning as the pill: a click that reached the page would be read
+    // as play/pause by the player underneath.
+    close.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dismiss();
+    });
+    close.addEventListener('pointerdown', (e) => e.stopPropagation());
+    close.addEventListener('mousedown', (e) => e.stopPropagation());
+
     wrap.addEventListener('pointerenter', () => {
       clearTimeout(state.dimTimer);
       state.dimTimer = 0;
@@ -786,8 +920,10 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     state.host = host;
     state.shadow = shadow;
     state.wrap = wrap;
+    state.bar = bar;
     state.pill = pill;
     state.pillLabel = label;
+    state.closeButton = close;
     state.panel = panel;
   }
 
@@ -1014,6 +1150,16 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     panel.appendChild(document.createElement('hr'));
 
     const foot = el('div', 'foot');
+    // The same thing the × does, spelled out — the × is the fast way and this
+    // is the discoverable one, and between them they answer "how do I get rid
+    // of this" without making the user commit to a preference.
+    const once = el('button', 'link', 'Hide until I reload this page');
+    once.type = 'button';
+    once.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dismiss();
+    });
     const site = el('button', 'link', 'Don’t show this on ' + location.hostname);
     site.type = 'button';
     site.addEventListener('click', (e) => {
@@ -1028,6 +1174,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
       e.stopPropagation();
       disableEverywhere();
     });
+    foot.appendChild(once);
     foot.appendChild(site);
     foot.appendChild(off);
     panel.appendChild(foot);
@@ -1515,6 +1662,19 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     if (state.active === video && state.hovered !== video && !state.panelOpen) hideUnlessPinned();
   }
 
+  /**
+   * The media just told us it is encrypted. This can arrive AFTER the pill is
+   * already up — the first frame of a DRM stream can be painted before the
+   * key session is negotiated — so the verdict has to retract the pill, not
+   * merely stop the next one.
+   */
+  function onEncrypted(e) {
+    const video = e.target;
+    if (!video || video.tagName !== 'VIDEO') return;
+    protectedVideos.add(video);
+    if (state.active === video) hide();
+  }
+
   function onFullscreen() {
     if (document.fullscreenElement) hide();
   }
@@ -1527,6 +1687,10 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
    */
   function onSoftNavigation() {
     hide();
+    // A dismissal does not follow the user to the next page — but it is keyed
+    // to the URL rather than cleared here, because YouTube fires
+    // `yt-navigate-start`/`-finish` on a watch page without the address
+    // changing, which would retract the × seconds after it was pressed.
     for (const video of Array.from(registered)) {
       if (!video.isConnected) unregister(video);
     }
@@ -1550,6 +1714,9 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     document.addEventListener('play', onMediaEvent, true);
     document.addEventListener('playing', onMediaEvent, true);
     document.addEventListener('pause', onPause, true);
+    // Media events do not bubble but they do capture, so one listener here sees
+    // `encrypted` from every video in the frame, including ones not yet created.
+    document.addEventListener('encrypted', onEncrypted, true);
     document.addEventListener('pointerover', onPointerOver, { capture: true, passive: true });
     document.addEventListener('fullscreenchange', onFullscreen, true);
     document.addEventListener('yt-navigate-finish', onSoftNavigation, true);
@@ -1570,6 +1737,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     document.removeEventListener('play', onMediaEvent, true);
     document.removeEventListener('playing', onMediaEvent, true);
     document.removeEventListener('pause', onPause, true);
+    document.removeEventListener('encrypted', onEncrypted, true);
     document.removeEventListener('pointerover', onPointerOver, true);
     document.removeEventListener('fullscreenchange', onFullscreen, true);
     document.removeEventListener('yt-navigate-finish', onSoftNavigation, true);
@@ -1589,8 +1757,10 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     state.host = null;
     state.shadow = null;
     state.wrap = null;
+    state.bar = null;
     state.pill = null;
     state.pillLabel = null;
+    state.closeButton = null;
     state.panel = null;
   }
 
@@ -1603,7 +1773,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 6px 4px; }
     state.configLoaded = true;
     state.enabled = Boolean(config && config.enabled);
     state.siteBlocked = Boolean(config && config.siteBlocked);
-    if (state.enabled && !state.siteBlocked) start();
+    // Not merged into `siteBlocked`: that one is the user's own list and is
+    // theirs to edit, and a built-in that silently appeared in it would be
+    // both confusing and removable. This one is a fact about the site.
+    state.drmSite = Boolean(config && config.drmSite);
+    if (state.enabled && !state.siteBlocked && !state.drmSite) start();
     else stop();
   }
 

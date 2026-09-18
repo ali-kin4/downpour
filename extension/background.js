@@ -1567,12 +1567,44 @@ async function readGrab(id) {
  * visits. The less it can be asked for, the less a compromised page could
  * learn if it ever found a way to impersonate one.
  */
+/**
+ * Sites whose video is DRM-protected as a matter of course.
+ *
+ * The overlay already refuses a video that has told it it is encrypted, but
+ * that verdict arrives per-video and only once the player has got far enough
+ * to say so — too late for the trailer on a title page, and no help at all on
+ * the browse grid, where a pill can appear over a preview that is not itself
+ * encrypted but belongs to a library that entirely is. Nothing on these sites
+ * can be downloaded by Downpour, by yt-dlp, or by any other tool, so the
+ * honest thing is to never offer.
+ *
+ * Kept SEPARATE from `videoOverlayHosts`: that list is the user's own, it is
+ * shown to them in options, and a built-in that silently appeared in it would
+ * be both surprising and deletable. This one is a fact about the site.
+ */
+const DRM_ONLY_HOSTS = [
+  'netflix.com',
+  'primevideo.com',
+  'disneyplus.com',
+  'hulu.com',
+  'max.com',
+  'hbomax.com',
+  'peacocktv.com',
+  'paramountplus.com',
+  'tv.apple.com',
+  'britbox.com',
+  'crave.ca',
+  'stan.com.au',
+  'skyshowtime.com'
+];
+
 async function videoOverlayConfig(host) {
   const prefs = await getPrefs();
   const clean = String(host || '').toLowerCase();
   return {
     enabled: prefs.videoOverlayEnabled !== false,
-    siteBlocked: hostExcluded(clean, normaliseHostList(prefs.videoOverlayHosts))
+    siteBlocked: hostExcluded(clean, normaliseHostList(prefs.videoOverlayHosts)),
+    drmSite: hostExcluded(clean, DRM_ONLY_HOSTS)
   };
 }
 

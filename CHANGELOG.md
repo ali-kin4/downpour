@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The video pill has an ×.** There was no way to dismiss it: the only two
+  off switches lived inside the menu you had to open first, and both of them
+  wrote a preference. A close button now sits beside the pill and hides it
+  until the page is loaded again -- nothing recorded, nothing to undo -- and
+  the menu spells the same thing out in words above the two that persist. The
+  dismissal is remembered against the page's address rather than cleared on a
+  navigation event, because YouTube fires `yt-navigate-start`/`-finish` on a
+  watch page without the address changing, which brought the pill back within
+  seconds of the × being pressed. Moving to a genuinely different page is a
+  new decision and the pill returns.
+
+- **No pill over a feed card's hover preview.** A video that sits inside a link
+  to another page is a preview of that page, not the subject of this one, so
+  the only URL the menu could probe is the one in the address bar. On a YouTube
+  feed that meant a pill on every card, a yt-dlp spawn to be told the feed has
+  no video on it, and -- because the probe cache is keyed by page URL -- the
+  same wrong answer shared by every card. The overlay now leaves those alone.
+  Any `<a>` ancestor counts, with or without an `href`: YouTube's card link is
+  a `yt-simple-endpoint` carrying no address of its own, so the obvious
+  `a[href]` selector walks straight past the case this exists for. A video
+  linking to the page it is already on is unaffected.
+
+- **Netflix and the other DRM-only services never get a pill.** Nothing there
+  can be downloaded by Downpour, by yt-dlp, or by anything else, so offering
+  could only ever disappoint. Two holes are closed: the per-video DRM check now
+  listens for the media's own `encrypted` event rather than waiting on
+  `mediaKeys`, which is only set once the page's `setMediaKeys()` has resolved
+  -- late enough that a player could paint its first frame, and its pill, before
+  the verdict arrived -- and a pill already on screen when that event lands is
+  retracted rather than left sitting there. Alongside it the extension carries a
+  short built-in list of services whose libraries are protected in their
+  entirety, kept separate from the per-site list in options so it cannot be
+  silently edited into or out of the user's own choices.
+
+### Added
+
+- `extension/video-overlay.test.mjs`, run by `npm run test:frontend`. It
+  evaluates the real content script against a hand-written DOM and drives it
+  with the events a browser sends, because all three bugs above were caller
+  bugs: a test on the predicates alone would have passed while the pill still
+  appeared.
+
 ## [1.5.2] - 2026-09-17
 
 ### Fixed
