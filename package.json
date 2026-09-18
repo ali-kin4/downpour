@@ -1,7 +1,7 @@
 {
   "name": "downpour",
   "private": true,
-  "version": "1.5.2",
+  "version": "1.5.3",
   "description": "A fast, modern download manager for Windows.",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",

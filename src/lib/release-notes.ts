@@ -40,6 +40,39 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: "1.5.3",
+    date: "2026-09-18",
+    summary:
+      "The button over videos behaves itself, and a dropped line stops looking like a dropped download.",
+    notes: [
+      {
+        title: "You can close the download button on a video",
+        detail:
+          "There is an × beside it now. Press it and the button is gone for that page, with nothing written down — open something else and it is back. The two switches that do stick, this site and everywhere, are still in the menu.",
+      },
+      {
+        title: "It stops turning up on YouTube thumbnails",
+        detail:
+          "Hovering a card on the home page raised the button over the little preview that plays, and it could never have worked: the only page it could read was the list you were looking at, not the video. It waits for the video's own page now.",
+      },
+      {
+        title: "Nothing is offered on Netflix and the rest",
+        detail:
+          "Those services scramble everything they play and no downloader can touch it, ours included. The button used to appear and then let you down. It stays away.",
+      },
+      {
+        title: "Losing your connection no longer loses the download",
+        detail:
+          "When the line goes away for long enough, the download is held rather than marked as failed. Every byte it already has is kept and it carries on from there when you start it again. The list calls it Interrupted, so you can tell it from one you stopped yourself.",
+      },
+      {
+        title: "Clear finished leaves unfinished work where it is",
+        detail:
+          "It used to take anything that had stopped for any reason, including a download that was most of the way through with its part file still sitting there. It now clears what actually finished, and what you cancelled.",
+      },
+    ],
+  },
+  {
     version: "1.5.2",
     date: "2026-09-17",
     notes: [

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-09-18
+
 ### Fixed
 
 - **A dropped connection no longer fails the download.** `fetch_segment`
@@ -756,7 +758,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.5.3...HEAD
+[1.5.3]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.3
 [1.5.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.2
 [1.5.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.1
 [1.5.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.0
