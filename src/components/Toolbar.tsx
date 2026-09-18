@@ -38,8 +38,12 @@ function DefaultBar() {
   const hasActive = (stats?.running ?? 0) > 0 || (stats?.queued ?? 0) > 0;
   const hasResumable =
     (stats?.paused ?? 0) > 0 || (stats?.idle ?? 0) > 0 || (stats?.failed ?? 0) > 0;
-  // Anything that will not run again and is just taking up space in the list.
-  const finished = (stats?.completed ?? 0) + (stats?.failed ?? 0);
+  // Rows that are genuinely done with and just taking up space. Failures are
+  // NOT counted: they keep a resumable part-file, "Clear finished" no longer
+  // touches them, and counting them here would have the button offer to remove
+  // rows it then leaves behind. Cancelled rows are cleared too but never appear
+  // in the stats, so they cannot be counted -- the same as before this change.
+  const finished = stats?.completed ?? 0;
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-2 border-b border-[var(--border-subtle)] px-3">
@@ -90,7 +94,7 @@ function DefaultBar() {
         <Button
           variant="ghost"
           icon={<Eraser size={14} />}
-          title={`Remove ${finished} finished row${finished === 1 ? "" : "s"} from the list — completed, failed and cancelled. Files on disk are kept.`}
+          title={`Remove ${finished} finished row${finished === 1 ? "" : "s"} from the list — completed and cancelled. Failed and interrupted downloads are left alone, because they still have a part-file to resume from. Files on disk are kept.`}
           onClick={() => void run("Could not clear", api.clearFinished)}
         >
           Clear finished

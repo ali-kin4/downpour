@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A dropped connection no longer fails the download.** `fetch_segment`
+  already retried transient errors with backoff; what happened after the budget
+  ran out was the problem. Reaching that point means the link stayed down --
+  an unplugged router, a dropped VPN, a sleeping laptop -- and nothing about
+  the transfer is wrong: the `.dpart` and its sidecar are intact and the next
+  attempt resumes from exactly where it stopped. Calling that `Failed` put it
+  in the same bucket as a 404 or a checksum mismatch. It now lands in `Paused`
+  with the reason recorded, which is already resumable, is already what
+  `resume_all` picks up, and is not swept by anything. A genuine failure -- a
+  dead link, a server that says no -- still fails.
+
+- **"Clear finished" no longer takes failed downloads.** It cleared completed,
+  failed *and* cancelled in one action, so a tidy-up click removed rows that
+  still had a part-file behind them and hours of transfer in it. It now clears
+  completed and cancelled only. The toolbar count stops including failures to
+  match, and the button's tooltip and the command palette hint say what it
+  actually does.
+
+- **A paused row no longer reads "Failed".** The status pill labelled by the
+  presence of an error rather than by the status, so anything carrying one said
+  "Failed" whatever state it was in -- which would have called every one of the
+  interrupted downloads above a failure. It labels by status now, and a paused
+  download that carries an error reads **Interrupted**, because "Paused" would
+  read as something the user did.
+
 - **The video pill has an ×.** There was no way to dismiss it: the only two
   off switches lived inside the menu you had to open first, and both of them
   wrote a preference. A close button now sits beside the pill and hides it

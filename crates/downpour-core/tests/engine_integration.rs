@@ -2129,3 +2129,149 @@ async fn a_database_from_before_the_history_column_still_opens() {
     let reopened = Store::open(&path).unwrap();
     assert_eq!(reopened.load_removed().unwrap()[0].id, "old");
 }
+
+// ---------------------------------------------------------------------------
+// A connection that went away is not a failed download
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_dropped_connection_parks_the_download_for_resume_instead_of_failing_it() {
+    // The whole reported scenario in one test: the link dies for longer than
+    // the retry budget, the row must survive a "Clear finished", and resuming
+    // must finish the file rather than start it again.
+    let data = payload(512 * 1024);
+    let server = common::start(data.clone()).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.max_concurrent_downloads = 1;
+    // One retry, so the budget is exhausted in a second rather than in the
+    // minute the default eight backoffs would take.
+    settings.max_retries = 1;
+    let engine = engine_with(settings);
+
+    // Cut every response at zero bytes. Delivering *some* bytes would reset the
+    // attempt counter -- that is what makes a flaky link recoverable -- so a
+    // link that is properly down has to deliver none.
+    server.state.drop_connection_after(0, 1000).await;
+
+    let id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "big.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+
+    let e = engine.clone();
+    let watch = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&watch).map(|i| i.status) == Some(DownloadStatus::Paused)
+        })
+        .await,
+        "a dead link should park the download, not fail it: {:?}",
+        engine
+            .list()
+            .iter()
+            .map(|i| (i.status, i.error.clone()))
+            .collect::<Vec<_>>()
+    );
+
+    let item = engine.get(&id).unwrap();
+    assert_ne!(
+        item.status,
+        DownloadStatus::Failed,
+        "a dropped connection must not be reported as a failure"
+    );
+    assert!(
+        item.error.is_some(),
+        "the reason has to survive, or the row looks like the user paused it"
+    );
+
+    // The click that used to lose it.
+    engine.clear_finished().unwrap();
+    assert!(
+        engine.get(&id).is_some(),
+        "clear finished took an unfinished download"
+    );
+
+    // The link comes back.
+    server.state.drop_connection_after(0, 0).await;
+    engine.resume_all().unwrap();
+
+    let e = engine.clone();
+    let watch = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&watch).map(|i| i.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "resume did not finish it: {:?}",
+        engine.get(&id).map(|i| (i.status, i.error))
+    );
+
+    let written = std::fs::read(dir.join("big.bin")).unwrap();
+    assert_eq!(sha256(&written), sha256(&data), "the resumed file is wrong");
+}
+
+#[tokio::test]
+async fn clear_finished_keeps_failed_rows_and_takes_completed_ones() {
+    // "Clear finished" used to sweep completed, failed and cancelled together,
+    // so one tidy-up click removed work that still had a part-file behind it.
+    let data = payload(64 * 1024);
+    let server = common::start(data).await;
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.max_concurrent_downloads = 1;
+    settings.max_retries = 0;
+    let engine = engine_with(settings);
+
+    let dead = engine
+        .add(spec(
+            &format!("{}/nope", server.base_url),
+            &dir.0,
+            "dead.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+    let good = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "good.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+
+    let e = engine.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.list().iter().all(|i| i.status.is_terminal())
+        })
+        .await,
+        "both should have settled: {:?}",
+        engine.list().iter().map(|i| i.status).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        engine.get(&dead).map(|i| i.status),
+        Some(DownloadStatus::Failed)
+    );
+    assert_eq!(
+        engine.get(&good).map(|i| i.status),
+        Some(DownloadStatus::Completed)
+    );
+
+    engine.clear_finished().unwrap();
+
+    assert!(
+        engine.get(&good).is_none(),
+        "the completed row should have been cleared"
+    );
+    assert!(
+        engine.get(&dead).is_some(),
+        "the failed row is unfinished work and must stay in the list"
+    );
+}

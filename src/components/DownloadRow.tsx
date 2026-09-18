@@ -368,6 +368,17 @@ const STATUS_META: Record<
 
 function StatusPill({ item }: { item: DownloadItem }) {
   const meta = STATUS_META[item.status];
+  // A PAUSED ROW CARRYING AN ERROR WAS NOT PAUSED BY THE USER. The engine parks
+  // a download there when the connection stayed down for its whole retry
+  // budget, because the transfer is intact and resumable and "failed" would be
+  // a lie. The status has to stay `paused` -- that is what makes it resume and
+  // what keeps "Clear finished" off it -- so the distinction is made in the
+  // word, not the state. Saying "Paused" here would read as something they did.
+  //
+  // The old rule was `item.error ? "Failed" : meta.label`, which labelled by
+  // the presence of an error rather than by the status, and so would have
+  // called every one of these a failure.
+  const label = item.status === "paused" && item.error ? "Interrupted" : meta.label;
   return (
     <div
       className="flex items-center gap-1 truncate text-[11px] font-medium"
@@ -377,7 +388,7 @@ function StatusPill({ item }: { item: DownloadItem }) {
       title={item.error ?? meta.label}
     >
       {meta.icon}
-      <span className="truncate">{item.error ? "Failed" : meta.label}</span>
+      <span className="truncate">{label}</span>
     </div>
   );
 }

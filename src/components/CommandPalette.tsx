@@ -106,7 +106,7 @@ export function CommandPalette() {
       {
         id: "clear-all",
         label: "Clear all finished",
-        hint: "Completed, failed and cancelled",
+        hint: "Completed and cancelled — failures are kept",
         icon: <Trash2 size={15} />,
         keywords: "purge",
         run: act("Could not clear", api.clearFinished),

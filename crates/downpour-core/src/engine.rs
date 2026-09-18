@@ -594,13 +594,15 @@ impl Engine {
         self.clear_statuses(&[DownloadStatus::Completed])
     }
 
-    /// Clears everything that will not run again: completed, failed, cancelled.
+    /// Clears the rows the user is done with: completed and cancelled.
+    ///
+    /// FAILED IS DELIBERATELY NOT IN THIS LIST. A failed download is unfinished
+    /// work with a resumable `.dpart` behind it, and sweeping it out with the
+    /// successes is how an interrupted 2 GB file disappears from the list on a
+    /// click meant to tidy up. Clearing those is its own decision; `retry_all`
+    /// is the one this button used to get in the way of.
     pub fn clear_finished(&self) -> Result<usize> {
-        self.clear_statuses(&[
-            DownloadStatus::Completed,
-            DownloadStatus::Failed,
-            DownloadStatus::Cancelled,
-        ])
+        self.clear_statuses(&[DownloadStatus::Completed, DownloadStatus::Cancelled])
     }
 
     /// One click here used to delete an arbitrary number of rows outright,
@@ -1350,12 +1352,40 @@ impl Engine {
             }
             Err(e) => {
                 let message = e.to_string();
-                tracing::warn!(id, error = %message, "download failed");
-                let _ = self.set_status(id, DownloadStatus::Failed, Some(message.clone()));
-                self.emit(EngineEvent::Failed {
-                    id: id.to_string(),
-                    error: message,
-                });
+                // A CONNECTION THAT WENT AWAY IS NOT A FAILED DOWNLOAD.
+                //
+                // `fetch_segment` already retries transient errors with
+                // backoff, so reaching here with one means the link stayed
+                // down for the whole retry budget -- an unplugged router, a
+                // dropped VPN, a laptop that slept. Nothing about the transfer
+                // is wrong: the `.dpart` and its sidecar are intact and the
+                // next attempt resumes from exactly where this one stopped.
+                //
+                // Calling that `Failed` put it in the same bucket as a 404 and
+                // a checksum mismatch, which is how an overnight download of a
+                // 2 GB file ended up one click from being swept out of the
+                // list by "Clear finished". `Paused` is the honest state: it is
+                // resumable, `resume_all` already picks it up, and nothing
+                // clears it. The error is kept so the row can say the
+                // connection dropped rather than implying the user did it.
+                let interrupted = e.is_transient();
+                if interrupted {
+                    tracing::warn!(id, error = %message, "connection lost; holding for resume");
+                } else {
+                    tracing::warn!(id, error = %message, "download failed");
+                }
+                let next = if interrupted {
+                    DownloadStatus::Paused
+                } else {
+                    DownloadStatus::Failed
+                };
+                let _ = self.set_status(id, next, Some(message.clone()));
+                if !interrupted {
+                    self.emit(EngineEvent::Failed {
+                        id: id.to_string(),
+                        error: message,
+                    });
+                }
             }
         }
     }
