@@ -110,14 +110,21 @@ impl Sidecar {
 
     /// Writes atomically: a crash mid-save leaves either the old sidecar or the
     /// new one, never a half-written file that fails to parse and throws away
-    /// a nearly finished download.
+    /// a nearly finished download. The temporary file is synced before the
+    /// rename, because a rename can reach the disk before the data it names,
+    /// and after a power cut that leaves an empty sidecar in place of both.
     pub fn save(&self, path: &Path) -> Result<()> {
+        use std::io::Write;
         let tmp = tmp_path(path);
         let bytes = serde_json::to_vec_pretty(self)?;
-        std::fs::write(&tmp, &bytes).map_err(|source| Error::Io {
+        let io = |source| Error::Io {
             path: tmp.clone(),
             source,
-        })?;
+        };
+        let mut file = std::fs::File::create(&tmp).map_err(io)?;
+        file.write_all(&bytes).map_err(io)?;
+        file.sync_all().map_err(io)?;
+        drop(file);
         std::fs::rename(&tmp, path).map_err(|source| Error::Io {
             path: path.to_path_buf(),
             source,

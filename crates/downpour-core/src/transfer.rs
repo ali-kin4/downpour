@@ -496,7 +496,7 @@ async fn segmented_transfer(
     .min(config.connections.max(1) as usize)
     .max(1);
 
-    persist(&table, meta_path, remote, total)?;
+    checkpoint(&table, part_path, meta_path, remote, total).await?;
 
     let mut workers = tokio::task::JoinSet::new();
     for worker_id in 0..worker_count {
@@ -524,8 +524,14 @@ async fn segmented_transfer(
 
     // Persist the sidecar while the workers run, so a crash or a power cut
     // loses at most a second of progress rather than the whole download.
+    //
+    // Stopped by a signal rather than aborted: a checkpoint runs on the
+    // blocking pool, where an abort cannot reach it, so the only way to know
+    // none is still in flight is for the saver to finish and say so.
+    let (stop_saver, mut saver_stopped) = tokio::sync::oneshot::channel::<()>();
     let saver = {
         let table = Arc::clone(&table);
+        let part_path = part_path.to_path_buf();
         let meta_path = meta_path.to_path_buf();
         let remote = remote.clone();
         let control = ctx.control.clone();
@@ -533,11 +539,14 @@ async fn segmented_transfer(
             let mut tick = tokio::time::interval(Duration::from_millis(1000));
             tick.tick().await;
             loop {
-                tick.tick().await;
+                tokio::select! {
+                    _ = &mut saver_stopped => break,
+                    _ = tick.tick() => {}
+                }
                 if control.is_stopped() {
                     break;
                 }
-                if let Err(e) = persist(&table, &meta_path, &remote, total) {
+                if let Err(e) = checkpoint(&table, &part_path, &meta_path, &remote, total).await {
                     tracing::warn!(error = %e, "failed to persist resume sidecar");
                 }
             }
@@ -578,10 +587,10 @@ async fn segmented_transfer(
             }
         }
     }
-    // Aborting only requests the stop. The saver must have actually finished
-    // before the final write below, or a save it had already started can land
-    // afterwards and put back a sidecar that was just removed or superseded.
-    saver.abort();
+    // The saver must have actually finished before the final write below, or
+    // a checkpoint it had already started can land afterwards and put back a
+    // sidecar that was just removed or superseded.
+    let _ = stop_saver.send(());
     let _ = saver.await;
 
     if let Some(Error::RemoteChanged { reason }) = &first_error {
@@ -595,7 +604,7 @@ async fn segmented_transfer(
 
     // Always flush the final state, including on pause: this is precisely the
     // snapshot a later resume depends on.
-    persist(&table, meta_path, remote, total)?;
+    checkpoint(&table, part_path, meta_path, remote, total).await?;
 
     if let Some(e) = first_error {
         return Err(e);
@@ -660,8 +669,20 @@ fn load_resumable(
     }
 }
 
-fn persist(
+/// Writes a resume checkpoint that the bytes on disk are guaranteed to back.
+///
+/// The order is the whole point. The cursors are read first; every byte they
+/// claim had already reached the OS before its cursor moved (see
+/// `stream_range`). The part file is then synced, so those bytes are on the
+/// disk, and only then is the sidecar written that vouches for them. Saved
+/// the other way round -- or without the sync -- a power cut can keep the
+/// sidecar and lose the data, and the resume after it treats a run of zeros
+/// as downloaded: a finished file, the right length, silently wrong.
+///
+/// Runs on the blocking pool, since a sync can take as long as the disk needs.
+async fn checkpoint(
     table: &Arc<Mutex<SegmentTable>>,
+    part_path: &Path,
     meta_path: &Path,
     remote: &RemoteInfo,
     total: u64,
@@ -671,7 +692,24 @@ fn persist(
     // A snapshot taken mid-steal is still structurally sound, but assert it
     // rather than writing a sidecar that will be rejected on resume.
     sidecar.validate()?;
-    sidecar.save(meta_path)
+    let part_path = part_path.to_path_buf();
+    let meta_path = meta_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let part = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&part_path)
+            .map_err(|source| Error::Io {
+                path: part_path.clone(),
+                source,
+            })?;
+        part.sync_data().map_err(|source| Error::Io {
+            path: part_path.clone(),
+            source,
+        })?;
+        sidecar.save(&meta_path)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("checkpoint task failed: {e}")))?
 }
 
 async fn worker_loop(
@@ -972,6 +1010,10 @@ async fn stream_range(
         file.write_all(&chunk[..take])
             .await
             .map_err(Error::PlainIo)?;
+        // tokio's `write_all` returns once the chunk is buffered, before the
+        // OS has it. The cursor is what a checkpoint vouches for, so it moves
+        // only once the bytes are really in the file.
+        file.flush().await.map_err(Error::PlainIo)?;
         cursor += take as u64;
 
         table.lock().advance(idx, take as u64);

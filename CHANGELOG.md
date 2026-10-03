@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them put back -- so a download link that handed off to a CDN gave the CDN
   the user's session. They now go only to the scheme, host and port they were
   captured for.
+- **Resume progress survives a power cut without vouching for lost bytes.**
+  The resume file was saved every second without the downloaded data being
+  forced to disk first, so after a power cut or crash it could claim bytes
+  that never got there, and the resume would finish a file with a run of
+  zeros in it. Progress is now recorded only for bytes already in the file,
+  and each checkpoint syncs the data before the record that vouches for it.
 - **Pause and cancel no longer wait out a retry delay.** When a server asked
   Downpour to wait -- a `429` with `Retry-After`, up to two minutes -- or a
   connection was backing off before a retry, a pause sat behind the wait. It
