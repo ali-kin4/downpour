@@ -245,6 +245,7 @@ const handlers: Record<string, Handler> = {
   "plugin:event|unlisten": () => null,
   "plugin:event|emit": () => null,
   probe_url: () => ({
+    requestedUrl: "https://releases.example.com/file.iso",
     finalUrl: "https://releases.example.com/file.iso",
     size: 6_203_180_032,
     supportsRange: true,

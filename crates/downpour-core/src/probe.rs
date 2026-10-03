@@ -11,8 +11,9 @@
 use crate::error::{Error, Result};
 use crate::model::RemoteInfo;
 use reqwest::header::{
-    HeaderMap, HeaderName, HeaderValue, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH,
-    CONTENT_RANGE, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE,
+    HeaderMap, HeaderName, HeaderValue, ACCEPT_RANGES, AUTHORIZATION, CONTENT_DISPOSITION,
+    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, COOKIE, ETAG, LAST_MODIFIED, PROXY_AUTHORIZATION,
+    RANGE,
 };
 use reqwest::{Client, StatusCode};
 use std::collections::BTreeMap;
@@ -39,6 +40,24 @@ pub fn build_headers(headers: &BTreeMap<String, String>) -> HeaderMap {
         ) {
             map.insert(name, value);
         }
+    }
+    map
+}
+
+/// The caller's headers as they may be sent to `remote.final_url`.
+///
+/// The probe follows redirects inside reqwest, which drops credentials when a
+/// hop changes host. Every request after it goes straight to the final URL,
+/// though, with headers rebuilt from what the caller supplied -- so the same
+/// rule has to be applied again here, or the strip on the probe is undone on
+/// the very next request.
+pub fn headers_for(headers: &BTreeMap<String, String>, remote: &RemoteInfo) -> HeaderMap {
+    let mut map = build_headers(headers);
+    if !remote.credentials_follow() {
+        for name in [COOKIE, AUTHORIZATION, PROXY_AUTHORIZATION] {
+            map.remove(name);
+        }
+        map.remove("cookie2");
     }
     map
 }
@@ -83,6 +102,7 @@ pub async fn probe(
         // A 416 means the server understood the range but the file is empty.
         if status == StatusCode::RANGE_NOT_SATISFIABLE {
             return Ok(RemoteInfo {
+                requested_url: url.to_string(),
                 final_url,
                 size: Some(0),
                 supports_range: false,
@@ -123,6 +143,7 @@ pub async fn probe(
     }
 
     Ok(RemoteInfo {
+        requested_url: url.to_string(),
         final_url,
         size,
         // A zero-length or unknown-length file gains nothing from segmentation.
@@ -222,6 +243,48 @@ mod tests {
         let built = build_headers(&m);
         assert!(built.get("accept-encoding").is_none());
         assert_eq!(built.len(), 1);
+    }
+
+    #[test]
+    fn credentials_go_only_where_they_were_captured_for() {
+        let mut caller = BTreeMap::new();
+        caller.insert("Cookie".to_string(), "session=abc".to_string());
+        caller.insert("Authorization".to_string(), "Bearer abc".to_string());
+        caller.insert("Referer".to_string(), "https://site.example/".to_string());
+        let remote = |from: &str, to: &str| RemoteInfo {
+            requested_url: from.into(),
+            final_url: to.into(),
+            ..Default::default()
+        };
+        let kept = |r: RemoteInfo| {
+            let h = headers_for(&caller, &r);
+            assert!(h.get("referer").is_some(), "only credentials are dropped");
+            h.get("cookie").is_some() && h.get("authorization").is_some()
+        };
+
+        assert!(kept(remote(
+            "https://site.example/a",
+            "https://site.example/b"
+        )));
+        assert!(kept(remote(
+            "https://site.example/a",
+            "https://site.example:443/b"
+        )));
+        assert!(!kept(remote(
+            "https://site.example/a",
+            "https://cdn.example/b"
+        )));
+        assert!(!kept(remote(
+            "https://site.example/a",
+            "https://site.example:8443/b"
+        )));
+        // A downgrade would put the session on the wire in clear.
+        assert!(!kept(remote(
+            "https://site.example/a",
+            "http://site.example/b"
+        )));
+        // Nothing recorded, as in a sidecar older than the field: not proof.
+        assert!(!kept(remote("", "https://site.example/b")));
     }
 
     #[test]

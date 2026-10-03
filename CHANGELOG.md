@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it is written, so a file replaced mid-download -- between a dropped
   connection and its retry, say -- is caught rather than spliced. The download
   then starts over on the new version by itself.
+- **A signed-in session is no longer sent to the host a link redirects to.**
+  Cookies and authorization handed over by the browser were captured for the
+  link's own site. The first request dropped them when a redirect left that
+  site, but every request after it went straight to the final address with
+  them put back -- so a download link that handed off to a CDN gave the CDN
+  the user's session. They now go only to the scheme, host and port they were
+  captured for.
 - **A server that refuses ranges partway through no longer fails the
   download.** If ranged requests stop being honoured after the probe, the
   download continues as a single stream instead of failing.

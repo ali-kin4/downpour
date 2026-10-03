@@ -61,6 +61,7 @@ export interface DownloadItem {
 }
 
 export interface RemoteInfo {
+  requestedUrl: string;
   finalUrl: string;
   size: number | null;
   supportsRange: boolean;

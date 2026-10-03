@@ -913,3 +913,94 @@ async fn a_server_that_ignores_if_range_is_caught_by_the_response_validators() {
     );
     assert!(!paths.final_path().exists());
 }
+
+// ---------------------------------------------------------------------------
+// Credentials stay with the origin they were captured for
+// ---------------------------------------------------------------------------
+
+/// The headers a browser hand-off carries for a signed-in session.
+fn session_headers() -> BTreeMap<String, String> {
+    let mut h = BTreeMap::new();
+    h.insert("Cookie".to_string(), "session=secret".to_string());
+    h.insert("Authorization".to_string(), "Bearer secret".to_string());
+    h.insert("Referer".to_string(), "https://example.com/".to_string());
+    h
+}
+
+async fn download_with_session(entry: &str, paths: &Paths) {
+    let mut c = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
+    c.headers = session_headers();
+    let remote = probe::probe(&c.client, entry, &c.headers).await.unwrap();
+    transfer::run_transfer(
+        &c,
+        &remote,
+        &paths.final_path(),
+        &paths.part_path(),
+        &paths.meta_path(),
+        &TransferConfig {
+            connections: 4,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn session_credentials_are_not_sent_to_the_host_a_link_redirects_to() {
+    // A site's download link that hands off to a CDN on another host. The
+    // cookies were captured for the site; the CDN must never see them, on the
+    // probe or on any of the segment requests that follow it.
+    let data = payload(4 * 1024 * 1024);
+    let cdn = common::start(data.clone()).await;
+    let site = common::start(Vec::new()).await;
+    site.state.redirect_to(&cdn.url("/file")).await;
+    let paths = Paths::new();
+
+    download_with_session(&site.url("/redirect"), &paths).await;
+
+    assert_eq!(file_sha(&paths.final_path()), sha256(&data));
+    assert!(
+        cdn.state.ranged_count() > 1,
+        "expected a segmented download"
+    );
+    assert_eq!(
+        cdn.state.credentialed_count(),
+        0,
+        "the site's Cookie/Authorization reached the host it redirected to"
+    );
+}
+
+#[tokio::test]
+async fn a_single_stream_download_also_keeps_credentials_at_home() {
+    let data = payload(256 * 1024);
+    let cdn = common::start_with(data.clone(), Mode::NoRanges, None).await;
+    let site = common::start(Vec::new()).await;
+    site.state.redirect_to(&cdn.url("/file")).await;
+    let paths = Paths::new();
+
+    download_with_session(&site.url("/redirect"), &paths).await;
+
+    assert_eq!(file_sha(&paths.final_path()), sha256(&data));
+    assert_eq!(cdn.state.credentialed_count(), 0);
+}
+
+#[tokio::test]
+async fn a_redirect_within_the_same_origin_keeps_the_session() {
+    // The other side of the rule: a signed-in download that redirects within
+    // its own site needs its cookies on every request, or it comes back as a
+    // login page.
+    let data = payload(4 * 1024 * 1024);
+    let site = common::start(data.clone()).await;
+    site.state.redirect_to(&site.url("/file")).await;
+    let paths = Paths::new();
+
+    download_with_session(&site.url("/redirect"), &paths).await;
+
+    assert_eq!(file_sha(&paths.final_path()), sha256(&data));
+    assert_eq!(
+        site.state.credentialed_count(),
+        site.state.request_count(),
+        "a same-origin request went out without the session"
+    );
+}

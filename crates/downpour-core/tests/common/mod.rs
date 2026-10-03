@@ -63,6 +63,12 @@ pub struct ServerState {
     /// server do this for a date it does not consider strong, and some do it
     /// for everything; the client must still finish the download.
     pub refuse_every_if_range: AtomicBool,
+    /// Requests for the file that carried a `Cookie` or `Authorization`
+    /// header, so a test can prove a session never reached a host it was not
+    /// captured for.
+    pub credentialed_requests: AtomicUsize,
+    /// Where `/redirect` sends the client with a `302`.
+    pub redirect_target: Mutex<Option<String>>,
     /// Requests that carried an `If-Range` header.
     pub if_range_requests: AtomicUsize,
     /// A replacement applied the moment the request counter reaches the given
@@ -93,6 +99,13 @@ impl ServerState {
     pub fn trickle(&self, delay_ms: usize) {
         self.chunk_delay_ms.store(delay_ms, Ordering::SeqCst);
     }
+    pub fn credentialed_count(&self) -> usize {
+        self.credentialed_requests.load(Ordering::SeqCst)
+    }
+    /// Makes `/redirect` answer with a `302` to `url`.
+    pub async fn redirect_to(&self, url: &str) {
+        *self.redirect_target.lock().await = Some(url.to_string());
+    }
     pub fn if_range_count(&self) -> usize {
         self.if_range_requests.load(Ordering::SeqCst)
     }
@@ -101,6 +114,7 @@ impl ServerState {
         self.ranged_requests.store(0, Ordering::SeqCst);
         self.bytes_served.store(0, Ordering::SeqCst);
         self.if_range_requests.store(0, Ordering::SeqCst);
+        self.credentialed_requests.store(0, Ordering::SeqCst);
     }
     pub fn honour_if_range(&self, honour: bool) {
         self.honour_if_range.store(honour, Ordering::SeqCst);
@@ -168,6 +182,8 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
         chunk_delay_ms: AtomicUsize::new(0),
         honour_if_range: AtomicBool::new(true),
         refuse_every_if_range: AtomicBool::new(false),
+        credentialed_requests: AtomicUsize::new(0),
+        redirect_target: Mutex::new(None),
         if_range_requests: AtomicUsize::new(0),
         pending_change: Mutex::new(None),
     });
@@ -175,6 +191,7 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
     let app = Router::new()
         .route("/file", get(serve))
         .route("/file/{*rest}", get(serve))
+        .route("/redirect", get(redirect))
         .with_state(Arc::clone(&state));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -190,7 +207,27 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
     }
 }
 
+/// A `302` to wherever the test pointed it. Not counted as a request for the
+/// file: the counters describe what the file's own host was asked for.
+async fn redirect(State(state): State<Arc<ServerState>>) -> Response<Body> {
+    let target = state.redirect_target.lock().await.clone();
+    match target {
+        Some(url) => Response::builder()
+            .status(StatusCode::FOUND)
+            .header("location", url)
+            .body(Body::empty())
+            .unwrap(),
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap(),
+    }
+}
+
 async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response<Body> {
+    if headers.contains_key("cookie") || headers.contains_key("authorization") {
+        state.credentialed_requests.fetch_add(1, Ordering::SeqCst);
+    }
     let nth = state.requests.fetch_add(1, Ordering::SeqCst) + 1;
     {
         let mut pending = state.pending_change.lock().await;

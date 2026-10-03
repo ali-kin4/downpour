@@ -1649,6 +1649,7 @@ async fn an_orphaned_part_file_is_resumed_rather_than_downloaded_again() {
     // them nothing proves these bytes belong to the file, and a resume is
     // rightly refused.
     let remote = RemoteInfo {
+        requested_url: url.clone(),
         final_url: url.clone(),
         size: Some(total as u64),
         supports_range: true,

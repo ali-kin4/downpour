@@ -195,6 +195,7 @@ mod tests {
 
     fn info() -> RemoteInfo {
         RemoteInfo {
+            requested_url: "https://example.com/f.bin".into(),
             final_url: "https://example.com/f.bin".into(),
             size: Some(1000),
             supports_range: true,
@@ -373,6 +374,7 @@ mod tests {
         // Nothing here can tell this file from a same-sized replacement, so
         // keeping the bytes would be a guess. A restart is the honest answer.
         let bare = RemoteInfo {
+            requested_url: "u".into(),
             final_url: "u".into(),
             size: Some(1000),
             supports_range: true,

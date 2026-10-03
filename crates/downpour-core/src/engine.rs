@@ -1634,6 +1634,7 @@ mod tests {
 
     fn write_sidecar(dir: &Path, name: &str, url: &str) {
         let remote = RemoteInfo {
+            requested_url: url.into(),
             final_url: url.into(),
             size: Some(1024),
             supports_range: true,

@@ -137,6 +137,10 @@ impl Segment {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteInfo {
+    /// The URL that was asked for, before redirects. Kept because the caller's
+    /// credentials were captured for it, and only for it.
+    #[serde(default)]
+    pub requested_url: String,
     /// URL after redirects; all subsequent range requests use this.
     pub final_url: String,
     pub size: Option<u64>,
@@ -172,6 +176,26 @@ impl Validator {
 }
 
 impl RemoteInfo {
+    /// Whether the caller's credentials -- `Cookie`, `Authorization` -- may be
+    /// sent to `final_url`.
+    ///
+    /// Only when no redirect has left the origin they were captured for. A
+    /// download link that hands off to a CDN on another host would otherwise
+    /// give that host the user's session on every request after the probe.
+    /// The scheme counts too: a redirect from https to http on the same host
+    /// would put the session on the wire in clear.
+    pub fn credentials_follow(&self) -> bool {
+        let (Ok(from), Ok(to)) = (
+            url::Url::parse(&self.requested_url),
+            url::Url::parse(&self.final_url),
+        ) else {
+            return false;
+        };
+        from.scheme() == to.scheme()
+            && from.host_str() == to.host_str()
+            && from.port_or_known_default() == to.port_or_known_default()
+    }
+
     /// The entity tag, unless it is weak. A weak tag (`W/"..."`) promises only
     /// that two versions mean the same thing, not that they hold the same
     /// bytes, so it can neither authorise stitching nor go in `If-Range`.

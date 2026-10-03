@@ -836,7 +836,7 @@ async fn stream_range(
     end: u64,
 ) -> Result<()> {
     let url = remote.final_url.as_str();
-    let mut headers = probe::build_headers(&ctx.headers);
+    let mut headers = probe::headers_for(&ctx.headers, remote);
     let range = format!("bytes={start}-{end}");
     headers.insert(
         RANGE,
@@ -1005,7 +1005,7 @@ async fn plain_transfer(
         .peak_connections
         .fetch_max(1, Ordering::Relaxed);
 
-    let headers = probe::build_headers(&ctx.headers);
+    let headers = probe::headers_for(&ctx.headers, remote);
     let response = ctx
         .client
         .get(&remote.final_url)
