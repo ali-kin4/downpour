@@ -30,6 +30,10 @@ pub enum Mode {
     UnknownLength,
     /// Returns 500 for everything.
     ServerError,
+    /// Answers every ranged request with `416` and `Content-Range: bytes */N`
+    /// -- a non-empty file whose server will not serve parts of it -- and the
+    /// whole file to a plain GET.
+    RejectsRanges,
 }
 
 pub struct ServerState {
@@ -339,6 +343,20 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
             return builder
                 .status(StatusCode::OK)
                 .header("accept-ranges", "bytes")
+                .header("content-length", total.to_string())
+                .body(body_for(&state, data).await)
+                .unwrap();
+        }
+        Mode::RejectsRanges => {
+            if range_header.is_some() {
+                return builder
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header("content-range", format!("bytes */{total}"))
+                    .body(Body::empty())
+                    .unwrap();
+            }
+            return builder
+                .status(StatusCode::OK)
                 .header("content-length", total.to_string())
                 .body(body_for(&state, data).await)
                 .unwrap();

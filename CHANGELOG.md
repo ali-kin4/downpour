@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that never got there, and the resume would finish a file with a run of
   zeros in it. Progress is now recorded only for bytes already in the file,
   and each checkpoint syncs the data before the record that vouches for it.
+- **A server that answers the size check with "range not satisfiable" no
+  longer has its file recorded as empty.** The size it states alongside that
+  answer is now used, and the file downloads as one stream instead of failing
+  its own length check.
 - **Pause and cancel no longer wait out a retry delay.** When a server asked
   Downpour to wait -- a `429` with `Retry-After`, up to two minutes -- or a
   connection was backing off before a retry, a pause sat behind the wait. It

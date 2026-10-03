@@ -99,12 +99,16 @@ pub async fn probe(
     drop(response);
 
     if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
-        // A 416 means the server understood the range but the file is empty.
+        // A 416 to `bytes=0-0` usually means the file is empty, but only
+        // `Content-Range: bytes */0` says so. `bytes */N` is a server stating
+        // the file is N bytes and declining to serve a part of it -- recording
+        // that as empty fails the download on its own length check. Without
+        // the header the size is unknown. Every case is one plain stream.
         if status == StatusCode::RANGE_NOT_SATISFIABLE {
             return Ok(RemoteInfo {
                 requested_url: url.to_string(),
                 final_url,
-                size: Some(0),
+                size: parse_content_range_total(&h),
                 supports_range: false,
                 etag: header_string(&h, ETAG),
                 last_modified: header_string(&h, LAST_MODIFIED),

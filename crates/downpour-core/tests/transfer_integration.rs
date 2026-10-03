@@ -1055,3 +1055,34 @@ async fn a_pause_lands_promptly_while_the_server_asks_us_to_wait() {
     );
     assert!(asked.elapsed() < Duration::from_secs(5));
 }
+
+// ---------------------------------------------------------------------------
+// A 416 to the probe is not proof of an empty file
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_server_that_rejects_ranges_with_416_still_downloads_the_file() {
+    // `Content-Range: bytes */N` says the file is N bytes long; it is only the
+    // range the server refused. Taking every 416 to mean "empty" recorded a
+    // size of zero, and the download then failed its own length check.
+    let data = payload(300 * 1024);
+    let server = common::start_with(data.clone(), Mode::RejectsRanges, Some("\"v1\"")).await;
+    let paths = Paths::new();
+
+    let c = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
+    let remote = probe_url(&c.client, &server.url("/file")).await;
+    assert_eq!(remote.size, Some(data.len() as u64), "{remote:?}");
+    assert!(!remote.supports_range);
+
+    transfer::run_transfer(
+        &c,
+        &remote,
+        &paths.final_path(),
+        &paths.part_path(),
+        &paths.meta_path(),
+        &TransferConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(file_sha(&paths.final_path()), sha256(&data));
+}
