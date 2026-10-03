@@ -79,6 +79,15 @@ impl Sidecar {
 
         let mut expected_start = 0u64;
         for s in &sorted {
+            // Every consumer of a segment computes `end + 1`. No real file
+            // reaches this offset, so refusing it here keeps that arithmetic
+            // safe everywhere instead of checked at each use.
+            if s.end == u64::MAX {
+                return Err(Error::CorruptMetadata(format!(
+                    "segment {}..{} ends at an impossible offset",
+                    s.start, s.end
+                )));
+            }
             if s.end < s.start {
                 return Err(Error::CorruptMetadata(format!(
                     "segment {}..{} ends before it starts",
@@ -320,6 +329,18 @@ mod tests {
     fn validate_rejects_out_of_range_cursor() {
         let mut sc = Sidecar::new("u".into(), info(), plan_segments(1000, 2), 1000);
         sc.segments[0].cursor = 9_999;
+        assert!(matches!(sc.validate(), Err(Error::CorruptMetadata(_))));
+    }
+
+    #[test]
+    fn validate_rejects_a_segment_ending_at_the_largest_offset() {
+        // `end + 1` overflows here: a panic in a debug build, and in a release
+        // build a wrap to zero that could make the coverage arithmetic come out
+        // "right". A file this size cannot exist, so the sidecar is corrupt.
+        let mut sc = Sidecar::new("u".into(), info(), vec![Segment::new(0, u64::MAX)], 0);
+        sc.segments[0].cursor = 0;
+        assert!(matches!(sc.validate(), Err(Error::CorruptMetadata(_))));
+        sc.total_bytes = u64::MAX;
         assert!(matches!(sc.validate(), Err(Error::CorruptMetadata(_))));
     }
 
