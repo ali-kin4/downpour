@@ -147,25 +147,64 @@ pub struct RemoteInfo {
     pub suggested_filename: Option<String>,
 }
 
+/// The validator that ties bytes already on disk to one version of a remote
+/// file. Every ranged request is made conditional on it with `If-Range`, so a
+/// server holding a different version answers with the whole file instead of
+/// a slice of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Validator {
+    /// A strong entity tag, quotes included, exactly as the server sent it.
+    ETag(String),
+    /// `Last-Modified`, used only when there is no strong tag. It has
+    /// one-second resolution, so it is the weaker of the two, but it is what
+    /// a great many static file servers offer and refusing it would cost those
+    /// servers every resume.
+    LastModified(String),
+}
+
+impl Validator {
+    /// The value for an `If-Range` header.
+    pub fn as_header(&self) -> &str {
+        match self {
+            Self::ETag(v) | Self::LastModified(v) => v,
+        }
+    }
+}
+
 impl RemoteInfo {
-    /// Whether this resource still looks like the one we started downloading.
+    /// The entity tag, unless it is weak. A weak tag (`W/"..."`) promises only
+    /// that two versions mean the same thing, not that they hold the same
+    /// bytes, so it can neither authorise stitching nor go in `If-Range`.
+    pub fn strong_etag(&self) -> Option<&str> {
+        self.etag.as_deref().filter(|e| !e.starts_with("W/"))
+    }
+
+    /// What identifies this version of the file, if the server said anything
+    /// that can: a strong `ETag` first, `Last-Modified` failing that.
+    pub fn validator(&self) -> Option<Validator> {
+        if let Some(tag) = self.strong_etag() {
+            return Some(Validator::ETag(tag.to_string()));
+        }
+        self.last_modified.clone().map(Validator::LastModified)
+    }
+
+    /// Whether anything in `self` positively contradicts `prior`: a size, an
+    /// entity tag or a modification date that both carry and that differ.
     ///
-    /// A strong `ETag` is authoritative. Failing that we compare
-    /// `Last-Modified`, then size. When the server gives us nothing to compare
-    /// we accept the resume, because refusing every resume against a
-    /// header-less server would make resume useless on exactly the servers that
-    /// need it most.
-    pub fn matches(&self, prior: &RemoteInfo) -> std::result::Result<(), String> {
+    /// Absence is not contradiction here. This is the check applied to every
+    /// response mid-transfer, where a server omitting a header on a `206` says
+    /// nothing either way; [`matches`](Self::matches) is the stricter test.
+    pub fn conflicts_with(&self, prior: &RemoteInfo) -> std::result::Result<(), String> {
+        if let (Some(a), Some(b)) = (self.size, prior.size) {
+            if a != b {
+                return Err(format!("size changed ({b} -> {a} bytes)"));
+            }
+        }
+        // Compared even when weak: a weak tag that changed still proves the
+        // file changed, even though one that matches proves nothing.
         if let (Some(a), Some(b)) = (&self.etag, &prior.etag) {
-            // Weak validators (`W/"..."`) only promise semantic equivalence,
-            // not byte equality, so they cannot authorise stitching.
-            let weak = a.starts_with("W/") || b.starts_with("W/");
-            if !weak {
-                return if a == b {
-                    Ok(())
-                } else {
-                    Err(format!("ETag changed ({b} -> {a})"))
-                };
+            if a != b {
+                return Err(format!("ETag changed ({b} -> {a})"));
             }
         }
         if let (Some(a), Some(b)) = (&self.last_modified, &prior.last_modified) {
@@ -173,12 +212,39 @@ impl RemoteInfo {
                 return Err(format!("Last-Modified changed ({b} -> {a})"));
             }
         }
-        if let (Some(a), Some(b)) = (self.size, prior.size) {
-            if a != b {
-                return Err(format!("size changed ({b} -> {a} bytes)"));
-            }
-        }
         Ok(())
+    }
+
+    /// Whether this resource can be proven to be the one we started
+    /// downloading, so the bytes already on disk may be kept.
+    ///
+    /// Proof means the validator recorded at the start is offered again,
+    /// unchanged. A validator the server has stopped sending is not proof, and
+    /// neither is a server that never sent one: in both cases a same-sized
+    /// replacement is indistinguishable from the original, and stitching the
+    /// two produces a file that is exactly the right length and silently
+    /// wrong. Restarting costs bandwidth; that costs the file.
+    pub fn matches(&self, prior: &RemoteInfo) -> std::result::Result<(), String> {
+        self.conflicts_with(prior)?;
+        match prior.validator() {
+            Some(Validator::ETag(tag)) if self.strong_etag() == Some(tag.as_str()) => Ok(()),
+            Some(Validator::ETag(tag)) => Err(format!(
+                "the server no longer confirms the ETag {tag} the download began with"
+            )),
+            Some(Validator::LastModified(date))
+                if self.last_modified.as_deref() == Some(date.as_str()) =>
+            {
+                Ok(())
+            }
+            Some(Validator::LastModified(date)) => Err(format!(
+                "the server no longer confirms the Last-Modified date {date} the download began with"
+            )),
+            None => Err(
+                "the server sends no ETag or Last-Modified, so the partial file cannot be \
+                 proven to belong to the current version"
+                    .to_string(),
+            ),
+        }
     }
 }
 

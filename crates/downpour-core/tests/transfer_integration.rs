@@ -695,3 +695,221 @@ async fn a_corrupt_sidecar_causes_a_restart_rather_than_a_failure() {
 
     assert_eq!(file_sha(&paths.final_path()), expected);
 }
+
+// ---------------------------------------------------------------------------
+// Resource identity: a resume, or a retry, must never splice two versions
+// ---------------------------------------------------------------------------
+
+/// Starts a throttled download, pauses it partway, and returns the config it
+/// ran with. Leaves a part file and a sidecar behind, as a real pause does.
+async fn download_then_pause(server: &common::TestServer, paths: &Paths) -> TransferConfig {
+    let control = Control::new();
+    let progress: Arc<TransferProgress> = Default::default();
+    let c = ctx(
+        control.clone(),
+        RateLimiter::new(3 * 1024 * 1024),
+        Arc::clone(&progress),
+    );
+    let remote = probe_url(&c.client, &server.url("/file")).await;
+    let config = TransferConfig {
+        connections: 4,
+        ..Default::default()
+    };
+    let (fp, pp, mp) = (paths.final_path(), paths.part_path(), paths.meta_path());
+    let cfg = config.clone();
+    let task =
+        tokio::spawn(async move { transfer::run_transfer(&c, &remote, &fp, &pp, &mp, &cfg).await });
+    let moved = {
+        let p = Arc::clone(&progress);
+        wait_for(Duration::from_secs(15), move || {
+            p.downloaded.load(Ordering::Relaxed) > 512 * 1024
+        })
+        .await
+    };
+    assert!(moved, "download never started");
+    control.pause();
+    let result = task.await.unwrap();
+    assert!(
+        matches!(result, Err(downpour_core::Error::Paused)),
+        "{result:?}"
+    );
+    assert!(paths.meta_path().exists(), "a pause must leave a sidecar");
+    config
+}
+
+/// Different bytes, identical length: the replacement a size check cannot see.
+fn same_length_replacement(original: &[u8]) -> Vec<u8> {
+    original.iter().map(|b| b ^ 0x5A).collect()
+}
+
+async fn resume(server: &common::TestServer, paths: &Paths, config: &TransferConfig) {
+    let c = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
+    let fresh = probe_url(&c.client, &server.url("/file")).await;
+    transfer::run_transfer(
+        &c,
+        &fresh,
+        &paths.final_path(),
+        &paths.part_path(),
+        &paths.meta_path(),
+        config,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_validator_that_disappears_is_not_taken_as_proof_nothing_changed() {
+    // The file had an ETag when the download started, has none now, and is
+    // the same length. Nothing on the wire proves it is the same file, so the
+    // bytes already on disk must not be kept.
+    let original = payload(6 * 1024 * 1024);
+    let server = common::start(original.clone()).await;
+    server
+        .state
+        .replace_all(original.clone(), Some("\"v1\""), None)
+        .await;
+    let paths = Paths::new();
+    let config = download_then_pause(&server, &paths).await;
+
+    let replacement = same_length_replacement(&original);
+    server
+        .state
+        .replace_all(replacement.clone(), None, None)
+        .await;
+    resume(&server, &paths, &config).await;
+
+    assert_eq!(
+        file_sha(&paths.final_path()),
+        sha256(&replacement),
+        "the old bytes were kept although the server could no longer vouch for them"
+    );
+}
+
+#[tokio::test]
+async fn a_server_with_no_validators_restarts_rather_than_resumes() {
+    // With neither an ETag nor a Last-Modified there is no way to tell this
+    // file from a same-sized replacement, so a resume would be a guess.
+    let original = payload(6 * 1024 * 1024);
+    let server = common::start_with(original.clone(), Mode::Honest, None).await;
+    server.state.replace_all(original.clone(), None, None).await;
+    let paths = Paths::new();
+    let config = download_then_pause(&server, &paths).await;
+
+    let replacement = same_length_replacement(&original);
+    server
+        .state
+        .replace_all(replacement.clone(), None, None)
+        .await;
+    resume(&server, &paths, &config).await;
+
+    assert_eq!(
+        file_sha(&paths.final_path()),
+        sha256(&replacement),
+        "bytes from two versions of the file were stitched together"
+    );
+}
+
+#[tokio::test]
+async fn a_matching_last_modified_alone_still_allows_a_resume() {
+    // The other half of the policy: a server that sends only Last-Modified can
+    // still prove identity, and must not lose its resume to the stricter rule.
+    let data = payload(6 * 1024 * 1024);
+    let server = common::start_with(data.clone(), Mode::Honest, None).await;
+    let paths = Paths::new();
+    let config = download_then_pause(&server, &paths).await;
+
+    server.state.reset_counters();
+    resume(&server, &paths, &config).await;
+
+    assert_eq!(file_sha(&paths.final_path()), sha256(&data));
+    assert!(
+        server.state.bytes_served() < data.len(),
+        "the resume refetched the whole file"
+    );
+    assert!(
+        server.state.if_range_count() > 0,
+        "resumed ranges must be conditional on the Last-Modified they continue"
+    );
+}
+
+/// Every first-round segment request is cut short, and the file changes before
+/// the retries go out. Request 1 is the probe; 2 to 5 are the four segments.
+async fn change_during_transfer(server: &common::TestServer, replacement: &[u8]) {
+    server.state.drop_connection_after(64 * 1024, 4).await;
+    server
+        .state
+        .change_at_request(
+            6,
+            common::Change {
+                data: replacement.to_vec(),
+                etag: Some("\"v2\"".into()),
+                last_modified: Some("Thu, 22 Oct 2026 07:28:00 GMT".into()),
+            },
+        )
+        .await;
+}
+
+async fn run_once(server: &common::TestServer, paths: &Paths) -> downpour_core::Result<()> {
+    let c = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
+    let remote = probe_url(&c.client, &server.url("/file")).await;
+    let config = TransferConfig {
+        connections: 4,
+        ..Default::default()
+    };
+    transfer::run_transfer(
+        &c,
+        &remote,
+        &paths.final_path(),
+        &paths.part_path(),
+        &paths.meta_path(),
+        &config,
+    )
+    .await
+    .map(|_| ())
+}
+
+#[tokio::test]
+async fn a_file_that_changes_mid_transfer_is_reported_not_spliced() {
+    // The retries after the dropped connections would fetch the new version's
+    // bytes into the old version's file. If-Range makes the server say so.
+    let original = payload(6 * 1024 * 1024);
+    let server = common::start(original.clone()).await;
+    let replacement = same_length_replacement(&original);
+    change_during_transfer(&server, &replacement).await;
+    let paths = Paths::new();
+
+    let result = run_once(&server, &paths).await;
+
+    assert!(
+        matches!(result, Err(downpour_core::Error::RemoteChanged { .. })),
+        "expected RemoteChanged, got {result:?}"
+    );
+    assert!(
+        !paths.final_path().exists(),
+        "a spliced file was put in place as finished"
+    );
+    assert!(
+        !paths.meta_path().exists(),
+        "the sidecar still vouches for bytes from a version that no longer exists"
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_ignores_if_range_is_caught_by_the_response_validators() {
+    // The server serves a 206 of the new version regardless. Its own ETag on
+    // that response is the remaining evidence, and it must be read.
+    let original = payload(6 * 1024 * 1024);
+    let server = common::start(original.clone()).await;
+    server.state.honour_if_range(false);
+    let replacement = same_length_replacement(&original);
+    change_during_transfer(&server, &replacement).await;
+    let paths = Paths::new();
+
+    let result = run_once(&server, &paths).await;
+
+    assert!(
+        matches!(result, Err(downpour_core::Error::RemoteChanged { .. })),
+        "expected RemoteChanged, got {result:?}"
+    );
+    assert!(!paths.final_path().exists());
+}

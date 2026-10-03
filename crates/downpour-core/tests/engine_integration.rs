@@ -1645,12 +1645,15 @@ async fn an_orphaned_part_file_is_resumed_rather_than_downloaded_again() {
 
     let mut segments = plan_segments(total as u64, 1);
     segments[0].cursor = half as u64;
+    // With the validators the server sent, as the engine records them: without
+    // them nothing proves these bytes belong to the file, and a resume is
+    // rightly refused.
     let remote = RemoteInfo {
         final_url: url.clone(),
         size: Some(total as u64),
         supports_range: true,
-        etag: None,
-        last_modified: None,
+        etag: Some("\"v1\"".into()),
+        last_modified: Some("Wed, 21 Oct 2026 07:28:00 GMT".into()),
         content_type: None,
         suggested_filename: None,
     };
@@ -2273,5 +2276,103 @@ async fn clear_finished_keeps_failed_rows_and_takes_completed_ones() {
     assert!(
         engine.get(&dead).is_some(),
         "the failed row is unfinished work and must stay in the list"
+    );
+}
+
+/// A file replaced on the server mid-download is fetched again in full, as the
+/// new version, rather than spliced or left failed.
+///
+/// The transfer refuses to mix versions and says so; this is the engine's half
+/// of the contract -- starting over on what the server now holds, which is what
+/// the user asked for when they gave it the link.
+#[tokio::test]
+async fn a_file_replaced_mid_download_is_fetched_again_as_the_new_version() {
+    let original = payload(6 * 1024 * 1024);
+    let replacement: Vec<u8> = original.iter().map(|b| b ^ 0x5A).collect();
+    let server = common::start(original).await;
+    let dir = TempDir::new();
+
+    // Request 1 is the probe and 2-3 the two segments, each cut short; the
+    // file changes before their retries go out.
+    server.state.drop_connection_after(64 * 1024, 2).await;
+    server
+        .state
+        .change_at_request(
+            4,
+            common::Change {
+                data: replacement.clone(),
+                etag: Some("\"v2\"".into()),
+                last_modified: Some("Thu, 22 Oct 2026 07:28:00 GMT".into()),
+            },
+        )
+        .await;
+
+    let engine = engine_with(Settings::default());
+    let mut s = spec(&server.url("/file"), &dir.0, "swap.bin", StartMode::Start);
+    s.connections = Some(2);
+    let id = engine.add(s).unwrap();
+
+    let e = engine.clone();
+    let settled = wait_for(Duration::from_secs(30), move || {
+        e.get(&id).is_some_and(|i| i.status.is_terminal())
+    })
+    .await;
+    assert!(settled, "download never settled: {:?}", engine.list());
+
+    let item = &engine.list()[0];
+    assert_eq!(
+        item.status,
+        DownloadStatus::Completed,
+        "a changed file must be fetched again, not left failed: {:?}",
+        item.error
+    );
+    assert_eq!(
+        sha256(&std::fs::read(item.target_path()).unwrap()),
+        sha256(&replacement),
+        "the finished file must be the new version in full"
+    );
+}
+
+/// A server that answers every conditional range with the whole file still
+/// gets its download finished, over one connection.
+///
+/// Making each range conditional on the file's validator is what stops a
+/// changed file being spliced, but a server may refuse the condition even when
+/// nothing changed. The response's own validators show the file is the same,
+/// so the right answer is the single stream such a server can serve -- not a
+/// failure on a download that used to work.
+#[tokio::test]
+async fn a_server_that_refuses_every_if_range_still_completes_in_one_stream() {
+    let data = payload(6 * 1024 * 1024);
+    let expected = sha256(&data);
+    let server = common::start(data).await;
+    server
+        .state
+        .refuse_every_if_range
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let dir = TempDir::new();
+
+    let engine = engine_with(Settings::default());
+    let mut s = spec(&server.url("/file"), &dir.0, "strict.bin", StartMode::Start);
+    s.connections = Some(4);
+    let id = engine.add(s).unwrap();
+
+    let e = engine.clone();
+    let settled = wait_for(Duration::from_secs(30), move || {
+        e.get(&id).is_some_and(|i| i.status.is_terminal())
+    })
+    .await;
+    assert!(settled, "download never settled: {:?}", engine.list());
+
+    let item = &engine.list()[0];
+    assert_eq!(
+        item.status,
+        DownloadStatus::Completed,
+        "the download failed instead of falling back: {:?}",
+        item.error
+    );
+    assert_eq!(
+        sha256(&std::fs::read(item.target_path()).unwrap()),
+        expected
     );
 }

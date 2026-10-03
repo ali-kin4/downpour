@@ -134,7 +134,7 @@ pub async fn probe(
     })
 }
 
-fn header_string(h: &HeaderMap, name: impl reqwest::header::AsHeaderName) -> Option<String> {
+pub fn header_string(h: &HeaderMap, name: impl reqwest::header::AsHeaderName) -> Option<String> {
     h.get(name)?.to_str().ok().map(|s| s.trim().to_string())
 }
 

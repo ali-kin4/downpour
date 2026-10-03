@@ -9,7 +9,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::{
-    DownloadId, DownloadItem, DownloadSpec, DownloadStatus, EngineEvent, StartMode,
+    DownloadId, DownloadItem, DownloadSpec, DownloadStatus, EngineEvent, RemoteInfo, StartMode,
 };
 use crate::naming;
 use crate::probe;
@@ -36,6 +36,16 @@ use tokio::sync::broadcast;
 const PUMP_INTERVAL: Duration = Duration::from_millis(500);
 
 const EVENT_CAPACITY: usize = 4096;
+
+/// How many times one run starts over because the file changed underneath it.
+///
+/// A file republished once mid-download deserves a fresh copy, so the first
+/// change is answered with a restart. A server that keeps reporting a new
+/// version is more often a load balancer whose nodes disagree about the ETag
+/// than a file really changing that fast, and for that the last attempt drops
+/// to a single stream: one response is one version by construction, with no
+/// second request to disagree with the first.
+const MAX_CHANGE_RESTARTS: u32 = 2;
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -1105,7 +1115,7 @@ impl Engine {
         config: &TransferConfig,
         conflict: ConflictPolicy,
     ) -> Result<PathBuf> {
-        let remote = probe::probe(&ctx.client, &item.url, &ctx.headers).await?;
+        let mut remote = probe::probe(&ctx.client, &item.url, &ctx.headers).await?;
 
         let parsed = url::Url::parse(&remote.final_url)
             .or_else(|_| url::Url::parse(&item.url))
@@ -1134,23 +1144,61 @@ impl Engine {
             if let Some(i) = items.get_mut(&item.id) {
                 i.filename = filename.clone();
                 i.name_locked = true;
+            }
+        }
+        self.adopt_remote(&item.id, &remote);
+
+        let final_path = item.dest_dir.join(&filename);
+        let part_path = item.dest_dir.join(format!("{filename}.dpart"));
+        let meta_path = item.dest_dir.join(format!("{filename}.dpmeta"));
+
+        let mut restarts = 0;
+        loop {
+            match transfer::run_transfer(ctx, &remote, &final_path, &part_path, &meta_path, config)
+                .await
+            {
+                Ok(outcome) => return Ok(outcome.path),
+                // The transfer has already thrown away the resume state that
+                // vouched for the old bytes, so probing again starts clean.
+                Err(Error::RemoteChanged { reason }) if restarts < MAX_CHANGE_RESTARTS => {
+                    restarts += 1;
+                    tracing::warn!(%reason, restarts, "remote file changed mid-download; starting over");
+                    remote = probe::probe(&ctx.client, &item.url, &ctx.headers).await?;
+                    if restarts == MAX_CHANGE_RESTARTS {
+                        remote.supports_range = false;
+                    }
+                    self.adopt_remote(&item.id, &remote);
+                }
+                // Ranges worked for the probe and then stopped: a server that
+                // refuses every conditional range, or one that only ever
+                // honoured the first. Its validators said the file is the
+                // same, so one stream of it is a correct download.
+                Err(Error::RangeNotHonoured { status }) if remote.supports_range => {
+                    tracing::warn!(
+                        status,
+                        "ranged requests refused; continuing as a single stream"
+                    );
+                    remote.supports_range = false;
+                    self.adopt_remote(&item.id, &remote);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Records what a probe learned about the file and marks the item running.
+    fn adopt_remote(&self, id: &str, remote: &RemoteInfo) {
+        {
+            let mut items = self.inner.items.write();
+            if let Some(i) = items.get_mut(id) {
                 i.final_url = Some(remote.final_url.clone());
                 i.total_bytes = remote.size;
                 i.supports_range = remote.supports_range;
                 i.status = DownloadStatus::Running;
             }
         }
-        self.persist(&item.id);
-        self.emit_status(&item.id);
-
-        let final_path = item.dest_dir.join(&filename);
-        let part_path = item.dest_dir.join(format!("{filename}.dpart"));
-        let meta_path = item.dest_dir.join(format!("{filename}.dpmeta"));
-
-        let outcome =
-            transfer::run_transfer(ctx, &remote, &final_path, &part_path, &meta_path, config)
-                .await?;
-        Ok(outcome.path)
+        self.persist(id);
+        self.emit_status(id);
     }
 
     /// Whether a download other than `except` is already using this name.

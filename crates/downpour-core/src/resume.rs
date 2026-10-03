@@ -191,6 +191,7 @@ pub fn connections_for_size(total: u64, max: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Validator;
 
     fn info() -> RemoteInfo {
         RemoteInfo {
@@ -368,17 +369,78 @@ mod tests {
     }
 
     #[test]
-    fn missing_validators_on_both_sides_allow_resume() {
-        // Refusing here would make resume useless against the bare servers that
-        // need it most, so this is a deliberate accept.
+    fn missing_validators_on_both_sides_refuse_resume() {
+        // Nothing here can tell this file from a same-sized replacement, so
+        // keeping the bytes would be a guess. A restart is the honest answer.
         let bare = RemoteInfo {
             final_url: "u".into(),
-            size: None,
+            size: Some(1000),
             supports_range: true,
             ..Default::default()
         };
         let sc = Sidecar::new("u".into(), bare.clone(), plan_segments(1000, 2), 1000);
-        sc.check_still_valid(&bare).unwrap();
+        assert!(matches!(
+            sc.check_still_valid(&bare),
+            Err(Error::RemoteChanged { .. })
+        ));
+    }
+
+    #[test]
+    fn an_etag_that_disappears_is_refused() {
+        let sc = Sidecar::new("u".into(), info(), plan_segments(1000, 2), 1000);
+        let mut fresh = info();
+        fresh.etag = None;
+        assert!(sc.check_still_valid(&fresh).is_err());
+    }
+
+    #[test]
+    fn an_etag_that_disappears_is_refused_even_if_last_modified_survives() {
+        // The tag was the identity the download began with. A date that
+        // happens to be present on both sides is weaker evidence, and does not
+        // stand in for the stronger one going missing.
+        let mut prior = info();
+        prior.last_modified = Some("Wed, 21 Oct 2026 07:28:00 GMT".into());
+        let sc = Sidecar::new("u".into(), prior.clone(), plan_segments(1000, 2), 1000);
+        let mut fresh = prior;
+        fresh.etag = None;
+        assert!(sc.check_still_valid(&fresh).is_err());
+    }
+
+    #[test]
+    fn a_weak_etag_alone_cannot_prove_identity() {
+        let mut prior = info();
+        prior.etag = Some("W/\"abc\"".into());
+        let sc = Sidecar::new("u".into(), prior.clone(), plan_segments(1000, 2), 1000);
+        assert!(sc.check_still_valid(&prior).is_err());
+    }
+
+    #[test]
+    fn a_matching_last_modified_proves_identity_without_an_etag() {
+        let mut prior = info();
+        prior.etag = None;
+        prior.last_modified = Some("Wed, 21 Oct 2026 07:28:00 GMT".into());
+        let sc = Sidecar::new("u".into(), prior.clone(), plan_segments(1000, 2), 1000);
+        sc.check_still_valid(&prior).unwrap();
+
+        let mut gone = prior;
+        gone.last_modified = None;
+        assert!(sc.check_still_valid(&gone).is_err(), "a vanished date");
+    }
+
+    #[test]
+    fn the_validator_prefers_a_strong_etag_and_never_a_weak_one() {
+        let mut r = info();
+        r.last_modified = Some("Wed, 21 Oct 2026 07:28:00 GMT".into());
+        assert_eq!(r.validator(), Some(Validator::ETag("\"abc\"".into())));
+        r.etag = Some("W/\"abc\"".into());
+        assert_eq!(
+            r.validator(),
+            Some(Validator::LastModified(
+                "Wed, 21 Oct 2026 07:28:00 GMT".into()
+            ))
+        );
+        r.last_modified = None;
+        assert_eq!(r.validator(), None);
     }
 
     #[test]

@@ -27,7 +27,10 @@ use crate::resume::{connections_for_size, plan_segments, Sidecar};
 use crate::throttle::RateLimiter;
 use futures::StreamExt;
 use parking_lot::Mutex;
-use reqwest::header::{HeaderValue, CONTENT_RANGE, RANGE, RETRY_AFTER};
+use reqwest::header::{
+    HeaderMap, HeaderValue, CONTENT_LENGTH, CONTENT_RANGE, ETAG, IF_RANGE, LAST_MODIFIED, RANGE,
+    RETRY_AFTER,
+};
 use reqwest::{Client, StatusCode};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -495,7 +498,7 @@ async fn segmented_transfer(
 
     persist(&table, meta_path, remote, total)?;
 
-    let mut workers = Vec::with_capacity(worker_count);
+    let mut workers = tokio::task::JoinSet::new();
     for worker_id in 0..worker_count {
         let table = Arc::clone(&table);
         let client = ctx.client.clone();
@@ -503,11 +506,11 @@ async fn segmented_transfer(
         let control = ctx.control.clone();
         let limiter = ctx.limiter.clone();
         let progress = Arc::clone(&ctx.progress);
-        let url = remote.final_url.clone();
+        let remote = remote.clone();
         let part_path = part_path.to_path_buf();
         let config = config.clone();
 
-        workers.push(tokio::spawn(async move {
+        workers.spawn(async move {
             let ctx = TransferContext {
                 client,
                 headers,
@@ -515,8 +518,8 @@ async fn segmented_transfer(
                 limiter,
                 progress,
             };
-            worker_loop(worker_id, &ctx, &url, &part_path, &table, &config).await
-        }));
+            worker_loop(worker_id, &ctx, &remote, &part_path, &table, &config).await
+        });
     }
 
     // Persist the sidecar while the workers run, so a crash or a power cut
@@ -542,10 +545,15 @@ async fn segmented_transfer(
     };
 
     let mut first_error: Option<Error> = None;
-    for w in workers {
-        match w.await {
+    while let Some(joined) = workers.join_next().await {
+        match joined {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
+                // Once one worker has seen a different version of the file,
+                // every byte the others fetch from here on is wasted at best.
+                if matches!(e, Error::RemoteChanged { .. }) {
+                    workers.abort_all();
+                }
                 // Report the first real failure; a pause that races with a
                 // genuine error should not mask the error.
                 let replace = match (&first_error, &e) {
@@ -561,6 +569,8 @@ async fn segmented_transfer(
                     first_error = Some(e);
                 }
             }
+            // Our own `abort_all` above, not a failure in its own right.
+            Err(join) if join.is_cancelled() => {}
             Err(join) => {
                 if first_error.is_none() {
                     first_error = Some(Error::Other(format!("worker panicked: {join}")));
@@ -568,7 +578,20 @@ async fn segmented_transfer(
             }
         }
     }
+    // Aborting only requests the stop. The saver must have actually finished
+    // before the final write below, or a save it had already started can land
+    // afterwards and put back a sidecar that was just removed or superseded.
     saver.abort();
+    let _ = saver.await;
+
+    if let Some(Error::RemoteChanged { reason }) = &first_error {
+        // The bytes on disk belong to a version the server no longer has. The
+        // sidecar is what would vouch for them on a resume, so it goes, and
+        // the part file is left to be overwritten by a fresh start.
+        tracing::warn!(%reason, "remote file changed mid-transfer; discarding resume state");
+        let _ = std::fs::remove_file(meta_path);
+        return Err(first_error.unwrap());
+    }
 
     // Always flush the final state, including on pause: this is precisely the
     // snapshot a later resume depends on.
@@ -654,7 +677,7 @@ fn persist(
 async fn worker_loop(
     worker_id: usize,
     ctx: &TransferContext,
-    url: &str,
+    remote: &RemoteInfo,
     part_path: &Path,
     table: &Arc<Mutex<SegmentTable>>,
     config: &TransferConfig,
@@ -687,7 +710,7 @@ async fn worker_loop(
         ctx.progress
             .peak_connections
             .fetch_max(in_flight, Ordering::Relaxed);
-        let result = fetch_segment(ctx, url, idx, table, &mut file, config).await;
+        let result = fetch_segment(ctx, remote, idx, table, &mut file, config).await;
         ctx.progress
             .active_connections
             .fetch_sub(1, Ordering::Relaxed);
@@ -701,7 +724,7 @@ async fn worker_loop(
 /// exponential backoff.
 async fn fetch_segment(
     ctx: &TransferContext,
-    url: &str,
+    remote: &RemoteInfo,
     idx: usize,
     table: &Arc<Mutex<SegmentTable>>,
     file: &mut tokio::fs::File,
@@ -718,7 +741,7 @@ async fn fetch_segment(
             return Ok(());
         }
 
-        match stream_range(ctx, url, idx, table, file, cursor, end).await {
+        match stream_range(ctx, remote, idx, table, file, cursor, end).await {
             Ok(()) => return Ok(()),
             Err(Error::RateLimited { retry_after_secs }) => {
                 rate_limited += 1;
@@ -792,30 +815,57 @@ fn parse_retry_after(value: Option<&HeaderValue>) -> Option<u64> {
     raw.parse::<u64>().ok()
 }
 
+/// What a response says about the file it came from, in the shape
+/// [`RemoteInfo::conflicts_with`] compares.
+fn observed(h: &HeaderMap, size: Option<u64>) -> RemoteInfo {
+    RemoteInfo {
+        size,
+        etag: probe::header_string(h, ETAG),
+        last_modified: probe::header_string(h, LAST_MODIFIED),
+        ..Default::default()
+    }
+}
+
 async fn stream_range(
     ctx: &TransferContext,
-    url: &str,
+    remote: &RemoteInfo,
     idx: usize,
     table: &Arc<Mutex<SegmentTable>>,
     file: &mut tokio::fs::File,
     start: u64,
     end: u64,
 ) -> Result<()> {
+    let url = remote.final_url.as_str();
     let mut headers = probe::build_headers(&ctx.headers);
     let range = format!("bytes={start}-{end}");
     headers.insert(
         RANGE,
         HeaderValue::from_str(&range).map_err(|e| Error::Other(e.to_string()))?,
     );
+    // Every range is conditional on the version the bytes already on disk came
+    // from. Without this, a file replaced between two requests -- a retry
+    // after a dropped connection, a steal, a resume -- is served as a slice of
+    // the new version and written beside slices of the old one.
+    if let Some(validator) = remote.validator() {
+        if let Ok(value) = HeaderValue::from_str(validator.as_header()) {
+            headers.insert(IF_RANGE, value);
+        }
+    }
 
     let response = ctx.client.get(url).headers(headers).send().await?;
     let status = response.status();
 
     if status != StatusCode::PARTIAL_CONTENT {
-        // A 200 here means the server ignored our Range header. Writing a full
-        // body into a mid-file segment slot is exactly the corruption this
-        // engine exists to avoid, so refuse rather than guess.
         if status.is_success() {
+            // A 200 is the server either refusing our If-Range because the file
+            // changed, or ignoring Range altogether; its validators say which.
+            // Either way a full body must never be written into a mid-file
+            // segment slot.
+            let length = probe::header_string(response.headers(), CONTENT_LENGTH)
+                .and_then(|v| v.parse::<u64>().ok());
+            if let Err(reason) = observed(response.headers(), length).conflicts_with(remote) {
+                return Err(Error::RemoteChanged { reason });
+            }
             return Err(Error::RangeNotHonoured {
                 status: status.as_u16(),
             });
@@ -833,22 +883,30 @@ async fn stream_range(
 
     // Verify the server gave us the window we asked for. Some CDNs round or
     // clamp ranges; honouring that silently scatters bytes at wrong offsets.
-    if let Some(cr) = response
-        .headers()
-        .get(CONTENT_RANGE)
-        .and_then(|v| v.to_str().ok())
-    {
-        match probe::parse_content_range_span(cr) {
-            Some((got_start, _)) if got_start == start => {}
-            Some((got_start, got_end)) => {
-                return Err(Error::Other(format!(
-                    "server returned bytes {got_start}-{got_end} when {start}-{end} was requested"
-                )));
-            }
-            None => {
-                return Err(Error::Other(format!("unparseable Content-Range: {cr}")));
-            }
+    // A 206 without a Content-Range cannot be placed in the file at all.
+    let Some(cr) = probe::header_string(response.headers(), CONTENT_RANGE) else {
+        return Err(Error::Other(
+            "server sent a partial response with no Content-Range".to_string(),
+        ));
+    };
+    match probe::parse_content_range_span(&cr) {
+        Some((got_start, got_end)) if got_start == start && got_end >= got_start => {}
+        Some((got_start, got_end)) => {
+            return Err(Error::Other(format!(
+                "server returned bytes {got_start}-{got_end} when {start}-{end} was requested"
+            )));
         }
+        None => {
+            return Err(Error::Other(format!("unparseable Content-Range: {cr}")));
+        }
+    }
+
+    // A server that ignores If-Range still labels what it sent. A different
+    // total or validator means this slice is from another version of the
+    // file, and it is refused before a byte of it reaches the disk.
+    let served_total = probe::parse_content_range_total_str(&cr);
+    if let Err(reason) = observed(response.headers(), served_total).conflicts_with(remote) {
+        return Err(Error::RemoteChanged { reason });
     }
 
     file.seek(std::io::SeekFrom::Start(start))

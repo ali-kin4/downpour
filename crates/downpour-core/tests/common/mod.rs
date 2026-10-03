@@ -12,7 +12,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, Response, StatusCode};
 use axum::routing::get;
 use axum::Router;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -53,6 +53,30 @@ pub struct ServerState {
     /// thing a local server otherwise cannot: a worker parked waiting on the
     /// network, which is where a download spends nearly all of its life.
     pub chunk_delay_ms: AtomicUsize,
+    /// Whether `If-Range` is honoured. A real server answers a stale `If-Range`
+    /// with `200` and the whole new file; switching this off reproduces the
+    /// servers that ignore it and serve a `206` of whatever they hold now, so
+    /// the client's own checks on the response are all that stands between it
+    /// and a spliced file.
+    pub honour_if_range: AtomicBool,
+    /// Treat every `If-Range` as stale, matching or not. RFC 9110 lets a
+    /// server do this for a date it does not consider strong, and some do it
+    /// for everything; the client must still finish the download.
+    pub refuse_every_if_range: AtomicBool,
+    /// Requests that carried an `If-Range` header.
+    pub if_range_requests: AtomicUsize,
+    /// A replacement applied the moment the request counter reaches the given
+    /// number, before that request is answered. The only deterministic way to
+    /// change the file *during* a transfer: a sleep-and-swap races the workers.
+    pub pending_change: Mutex<Option<(usize, Change)>>,
+}
+
+/// A new version of the file, applied by [`ServerState::change_at_request`].
+#[derive(Debug, Clone)]
+pub struct Change {
+    pub data: Vec<u8>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
 }
 
 impl ServerState {
@@ -69,10 +93,34 @@ impl ServerState {
     pub fn trickle(&self, delay_ms: usize) {
         self.chunk_delay_ms.store(delay_ms, Ordering::SeqCst);
     }
+    pub fn if_range_count(&self) -> usize {
+        self.if_range_requests.load(Ordering::SeqCst)
+    }
     pub fn reset_counters(&self) {
         self.requests.store(0, Ordering::SeqCst);
         self.ranged_requests.store(0, Ordering::SeqCst);
         self.bytes_served.store(0, Ordering::SeqCst);
+        self.if_range_requests.store(0, Ordering::SeqCst);
+    }
+    pub fn honour_if_range(&self, honour: bool) {
+        self.honour_if_range.store(honour, Ordering::SeqCst);
+    }
+    /// Replaces the file, both validators included. `None` removes a
+    /// validator, which is how a server that stops sending one is simulated.
+    pub async fn replace_all(
+        &self,
+        data: Vec<u8>,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) {
+        *self.data.lock().await = data;
+        *self.etag.lock().await = etag.map(|s| s.to_string());
+        *self.last_modified.lock().await = last_modified.map(|s| s.to_string());
+    }
+    /// Swaps in `change` just before the `nth` request (counting from 1 since
+    /// the last counter reset) is answered.
+    pub async fn change_at_request(&self, nth: usize, change: Change) {
+        *self.pending_change.lock().await = Some((nth, change));
     }
     pub async fn set_mode(&self, mode: Mode) {
         *self.mode.lock().await = mode;
@@ -118,6 +166,10 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
         ranged_requests: AtomicUsize::new(0),
         bytes_served: AtomicUsize::new(0),
         chunk_delay_ms: AtomicUsize::new(0),
+        honour_if_range: AtomicBool::new(true),
+        refuse_every_if_range: AtomicBool::new(false),
+        if_range_requests: AtomicUsize::new(0),
+        pending_change: Mutex::new(None),
     });
 
     let app = Router::new()
@@ -139,7 +191,16 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
 }
 
 async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response<Body> {
-    state.requests.fetch_add(1, Ordering::SeqCst);
+    let nth = state.requests.fetch_add(1, Ordering::SeqCst) + 1;
+    {
+        let mut pending = state.pending_change.lock().await;
+        if pending.as_ref().is_some_and(|(at, _)| nth >= *at) {
+            let (_, change) = pending.take().unwrap();
+            *state.data.lock().await = change.data;
+            *state.etag.lock().await = change.etag;
+            *state.last_modified.lock().await = change.last_modified;
+        }
+    }
 
     let mode = *state.mode.lock().await;
     if mode == Mode::ServerError {
@@ -209,6 +270,32 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
     }
 
     builder = builder.header("accept-ranges", "bytes");
+
+    // RFC 9110 13.1.5: a range is served only if the validator in `If-Range`
+    // still matches -- a strong comparison for an entity tag, an exact one for
+    // a date. Otherwise the whole current file goes back with a 200.
+    let if_range = headers
+        .get("if-range")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
+    if if_range.is_some() {
+        state.if_range_requests.fetch_add(1, Ordering::SeqCst);
+    }
+    let stale = match &if_range {
+        Some(v) if v.starts_with('"') || v.starts_with("W/") => {
+            v.starts_with("W/")
+                || etag
+                    .as_deref()
+                    .is_none_or(|e| e.starts_with("W/") || e != v)
+        }
+        Some(v) => last_modified.as_deref() != Some(v.as_str()),
+        None => false,
+    } || (if_range.is_some() && state.refuse_every_if_range.load(Ordering::SeqCst));
+    let range_header = if stale && state.honour_if_range.load(Ordering::SeqCst) {
+        None
+    } else {
+        range_header
+    };
 
     let Some(raw) = range_header else {
         return builder

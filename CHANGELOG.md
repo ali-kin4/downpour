@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file that changes on the server is never stitched together from two
+  versions.** Resume used to accept a partial file whenever nothing on the
+  server contradicted it, so a server that stopped sending an ETag, or never
+  sent one, had a same-sized replacement resumed into the old bytes. A resume
+  now needs the server to confirm the ETag (or, without one, the Last-Modified
+  date) the download began with, and restarts otherwise, as the README always
+  promised. Every ranged request is also made conditional with `If-Range`, and
+  each `206` is checked against the file's size and validators before a byte of
+  it is written, so a file replaced mid-download -- between a dropped
+  connection and its retry, say -- is caught rather than spliced. The download
+  then starts over on the new version by itself.
+- **A server that refuses ranges partway through no longer fails the
+  download.** If ranged requests stop being honoured after the probe, the
+  download continues as a single stream instead of failing.
+
 ## [1.5.3] - 2026-09-18
 
 ### Fixed

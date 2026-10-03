@@ -44,9 +44,10 @@ pub enum Error {
     #[error("server advertised range support but returned {status} for a ranged request")]
     RangeNotHonoured { status: u16 },
 
-    /// The remote file changed between the original download and the resume
-    /// attempt. Stitching old and new bytes would silently corrupt the file.
-    #[error("remote file changed since download started ({reason}); restarting")]
+    /// The remote file changed since the download began -- or can no longer be
+    /// shown not to have -- so the bytes already written cannot be kept.
+    /// Stitching old and new bytes would silently corrupt the file.
+    #[error("the remote file changed since the download started ({reason})")]
     RemoteChanged { reason: String },
 
     #[error("checksum mismatch: expected {expected}, got {actual}")]
