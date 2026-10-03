@@ -1004,3 +1004,54 @@ async fn a_redirect_within_the_same_origin_keeps_the_session() {
         "a same-origin request went out without the session"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Waiting to retry is still listening for the user
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_pause_lands_promptly_while_the_server_asks_us_to_wait() {
+    // A 429 with Retry-After: 30 parks every worker for thirty seconds. The
+    // user pressing pause in that time must not have to wait them out.
+    let data = payload(4 * 1024 * 1024);
+    let server = common::start(data).await;
+    let paths = Paths::new();
+
+    let control = Control::new();
+    let c = ctx(
+        control.clone(),
+        RateLimiter::unlimited(),
+        Default::default(),
+    );
+    let remote = probe_url(&c.client, &server.url("/file")).await;
+    server.state.rate_limit(usize::MAX, 30);
+
+    let (fp, pp, mp) = (paths.final_path(), paths.part_path(), paths.meta_path());
+    let task = tokio::spawn(async move {
+        let config = TransferConfig {
+            connections: 2,
+            ..Default::default()
+        };
+        transfer::run_transfer(&c, &remote, &fp, &pp, &mp, &config).await
+    });
+
+    let waiting = {
+        let s = std::sync::Arc::clone(&server.state);
+        wait_for(Duration::from_secs(10), move || s.rate_limited_count() >= 2).await
+    };
+    assert!(waiting, "the workers never reached their Retry-After wait");
+
+    let asked = std::time::Instant::now();
+    control.pause();
+    // Thirty seconds is what the bug costs; five leaves a loaded CI runner
+    // all the room it needs without coming near it.
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("pause waited out the server's Retry-After")
+        .unwrap();
+    assert!(
+        matches!(result, Err(downpour_core::Error::Paused)),
+        "expected Paused, got {result:?}"
+    );
+    assert!(asked.elapsed() < Duration::from_secs(5));
+}

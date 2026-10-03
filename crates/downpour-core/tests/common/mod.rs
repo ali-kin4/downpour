@@ -67,6 +67,11 @@ pub struct ServerState {
     /// header, so a test can prove a session never reached a host it was not
     /// captured for.
     pub credentialed_requests: AtomicUsize,
+    /// Answer this many ranged requests with `429` and `Retry-After`.
+    pub rate_limit_remaining: AtomicUsize,
+    pub retry_after_secs: AtomicUsize,
+    /// `429`s actually sent, so a test can wait until a client is in its wait.
+    pub rate_limited: AtomicUsize,
     /// Where `/redirect` sends the client with a `302`.
     pub redirect_target: Mutex<Option<String>>,
     /// Requests that carried an `If-Range` header.
@@ -98,6 +103,16 @@ impl ServerState {
     /// Trickles the body out in `parts` pieces, pausing between each.
     pub fn trickle(&self, delay_ms: usize) {
         self.chunk_delay_ms.store(delay_ms, Ordering::SeqCst);
+    }
+    /// Makes the next `times` ranged requests answer `429` with this
+    /// `Retry-After`.
+    pub fn rate_limit(&self, times: usize, retry_after_secs: usize) {
+        self.retry_after_secs
+            .store(retry_after_secs, Ordering::SeqCst);
+        self.rate_limit_remaining.store(times, Ordering::SeqCst);
+    }
+    pub fn rate_limited_count(&self) -> usize {
+        self.rate_limited.load(Ordering::SeqCst)
     }
     pub fn credentialed_count(&self) -> usize {
         self.credentialed_requests.load(Ordering::SeqCst)
@@ -183,6 +198,9 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
         honour_if_range: AtomicBool::new(true),
         refuse_every_if_range: AtomicBool::new(false),
         credentialed_requests: AtomicUsize::new(0),
+        rate_limit_remaining: AtomicUsize::new(0),
+        retry_after_secs: AtomicUsize::new(0),
+        rate_limited: AtomicUsize::new(0),
         redirect_target: Mutex::new(None),
         if_range_requests: AtomicUsize::new(0),
         pending_change: Mutex::new(None),
@@ -259,6 +277,28 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
         .map(String::from);
     if range_header.is_some() {
         state.ranged_requests.fetch_add(1, Ordering::SeqCst);
+        let remaining = &state.rate_limit_remaining;
+        let mut n = remaining.load(Ordering::SeqCst);
+        let limited = loop {
+            if n == 0 {
+                break false;
+            }
+            match remaining.compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break true,
+                Err(actual) => n = actual,
+            }
+        };
+        if limited {
+            state.rate_limited.fetch_add(1, Ordering::SeqCst);
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .header(
+                    "retry-after",
+                    state.retry_after_secs.load(Ordering::SeqCst).to_string(),
+                )
+                .body(Body::empty())
+                .unwrap();
+        }
     }
 
     let mut builder = Response::builder().header("content-type", "application/octet-stream");

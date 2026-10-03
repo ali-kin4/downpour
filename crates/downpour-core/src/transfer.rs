@@ -760,7 +760,7 @@ async fn fetch_segment(
                     .unwrap_or_else(|| backoff_delay(rate_limited + 2))
                     .min(MAX_RETRY_AFTER);
                 tracing::info!(?wait, rate_limited, "rate limited; waiting");
-                tokio::time::sleep(wait).await;
+                wait_unless_stopped(&ctx.control, wait).await?;
             }
             Err(e) if e.is_transient() => {
                 let (now_cursor, _) = table.lock().bounds(idx);
@@ -777,10 +777,24 @@ async fn fetch_segment(
                 }
                 let backoff = backoff_delay(attempts);
                 tracing::debug!(error = %e, attempts, ?backoff, "retrying segment");
-                tokio::time::sleep(backoff).await;
+                wait_unless_stopped(&ctx.control, backoff).await?;
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+/// Sleeps out a retry delay, unless the transfer is told to stop first.
+///
+/// These waits run to tens of seconds -- a server's `Retry-After`, or backoff
+/// near its cap -- and a pause that queued behind one would leave the user
+/// watching a download they had stopped, for the same reason the chunk loop
+/// races its reads.
+async fn wait_unless_stopped(control: &Control, delay: Duration) -> Result<()> {
+    tokio::select! {
+        biased;
+        () = control.stopped() => control.check(),
+        () = tokio::time::sleep(delay) => Ok(()),
     }
 }
 

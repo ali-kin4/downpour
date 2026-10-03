@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them put back -- so a download link that handed off to a CDN gave the CDN
   the user's session. They now go only to the scheme, host and port they were
   captured for.
+- **Pause and cancel no longer wait out a retry delay.** When a server asked
+  Downpour to wait -- a `429` with `Retry-After`, up to two minutes -- or a
+  connection was backing off before a retry, a pause sat behind the wait. It
+  now takes effect at once.
 - **A server that refuses ranges partway through no longer fails the
   download.** If ranged requests stop being honoured after the probe, the
   download continues as a single stream instead of failing.
