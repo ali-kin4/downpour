@@ -165,6 +165,8 @@ mod tests {
             elapsed_ms: 0,
             removed_at: None,
             awaiting_address_until: None,
+            address_expired: false,
+            media: None,
         }
     }
 

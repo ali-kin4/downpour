@@ -100,6 +100,23 @@ pub struct DownloadSpec {
     /// Free-form origin tag for the UI: clipboard, extension, batch, cli.
     #[serde(default)]
     pub source: Option<String>,
+    /// Set when the address was resolved from a media page.
+    #[serde(default)]
+    pub media: Option<MediaSource>,
+}
+
+/// Where a media download's address came from, kept so the address can be
+/// worked out again when it expires.
+///
+/// A media file's direct address is signed and short-lived; the page it was
+/// resolved from and the format chosen there are not. With these the app can
+/// resolve a fresh address itself instead of making the user add the video
+/// again -- which would also throw away everything already downloaded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaSource {
+    pub page_url: String,
+    pub format_id: String,
 }
 
 /// One byte range of the target file, and how far into it we have written.
@@ -334,6 +351,15 @@ pub struct DownloadItem {
     /// outlive the app.
     #[serde(default)]
     pub awaiting_address_until: Option<i64>,
+    /// Set when the download stopped because its address expired, and cleared
+    /// when it gets a new one. Not stored: it describes the last attempt of
+    /// this session, which is what decides whether to refresh automatically.
+    #[serde(default)]
+    pub address_expired: bool,
+    /// Set when the address was resolved from a media page; lets the app
+    /// resolve a fresh address when this one expires.
+    #[serde(default)]
+    pub media: Option<MediaSource>,
 }
 
 impl DownloadItem {

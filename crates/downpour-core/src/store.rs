@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Incremented for every schema change; `migrate` applies each step in order.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Every column `row_to_item` reads, in the order it reads them. Shared so the
 /// active list and the history list cannot drift apart: they differ only in
@@ -26,7 +26,8 @@ const ITEM_COLUMNS: &str = "id, url, final_url, filename, user_named, name_locke
      dest_dir, headers, status,
      total_bytes, downloaded_bytes, connections, supports_range,
      category, source, scheduled, error, checksum,
-     created_at, sequence, started_at, completed_at, elapsed_ms, removed_at";
+     created_at, sequence, started_at, completed_at, elapsed_ms, removed_at,
+     media_page_url, media_format_id";
 
 #[derive(Clone)]
 pub struct Store {
@@ -146,6 +147,18 @@ impl Store {
             )?;
         }
 
+        if current < 3 {
+            // Where a media download's address came from, so an expired one can
+            // be resolved again. Added in place for the same reason as
+            // `removed_at`: every existing row is content to leave it empty.
+            tx.execute_batch(
+                r#"
+                ALTER TABLE downloads ADD COLUMN media_page_url TEXT;
+                ALTER TABLE downloads ADD COLUMN media_format_id TEXT;
+                "#,
+            )?;
+        }
+
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
         Ok(())
@@ -170,10 +183,11 @@ impl Store {
                 dest_dir, headers, status,
                 total_bytes, downloaded_bytes, connections, supports_range,
                 category, source, scheduled, error, checksum,
-                created_at, sequence, started_at, completed_at, elapsed_ms
+                created_at, sequence, started_at, completed_at, elapsed_ms,
+                media_page_url, media_format_id
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+                ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
             )
             ON CONFLICT(id) DO UPDATE SET
                 url = excluded.url,
@@ -195,7 +209,9 @@ impl Store {
                 checksum = excluded.checksum,
                 started_at = excluded.started_at,
                 completed_at = excluded.completed_at,
-                elapsed_ms = excluded.elapsed_ms
+                elapsed_ms = excluded.elapsed_ms,
+                media_page_url = excluded.media_page_url,
+                media_format_id = excluded.media_format_id
             "#,
             params![
                 item.id,
@@ -221,6 +237,8 @@ impl Store {
                 item.started_at,
                 item.completed_at,
                 item.elapsed_ms as i64,
+                item.media.as_ref().map(|m| m.page_url.as_str()),
+                item.media.as_ref().map(|m| m.format_id.as_str()),
             ],
         )?;
         Ok(())
@@ -423,6 +441,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadItem> {
     let status_raw: String = row.get(8)?;
     Ok(DownloadItem {
         awaiting_address_until: None,
+        address_expired: false,
         id: row.get(0)?,
         url: row.get(1)?,
         final_url: row.get(2)?,
@@ -451,6 +470,17 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadItem> {
         completed_at: row.get(21)?,
         elapsed_ms: row.get::<_, i64>(22)? as u64,
         removed_at: row.get(23)?,
+        // Both or neither: half a media source cannot resolve anything.
+        media: match (
+            row.get::<_, Option<String>>(24)?,
+            row.get::<_, Option<String>>(25)?,
+        ) {
+            (Some(page_url), Some(format_id)) => Some(crate::model::MediaSource {
+                page_url,
+                format_id,
+            }),
+            _ => None,
+        },
     })
 }
 
@@ -497,6 +527,8 @@ mod tests {
         headers.insert("Cookie".into(), "session=abc".into());
         DownloadItem {
             awaiting_address_until: None,
+            address_expired: false,
+            media: None,
             id: id.into(),
             url: "https://example.com/f.bin".into(),
             final_url: Some("https://cdn.example.com/f.bin".into()),

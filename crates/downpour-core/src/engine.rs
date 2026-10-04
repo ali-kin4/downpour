@@ -298,6 +298,8 @@ impl Engine {
 
             let item = DownloadItem {
                 awaiting_address_until: None,
+                address_expired: false,
+                media: spec.media.clone(),
                 id: uuid::Uuid::new_v4().to_string(),
                 url,
                 final_url: None,
@@ -362,6 +364,7 @@ impl Engine {
         let specs = urls
             .into_iter()
             .map(|url| DownloadSpec {
+                media: None,
                 url,
                 headers: Default::default(),
                 filename: None,
@@ -488,6 +491,7 @@ impl Engine {
             item.error = None;
             // A new address, however it arrived, is what the wait was for.
             item.awaiting_address_until = None;
+            item.address_expired = false;
         }
         self.persist(id);
         self.emit_status(id);
@@ -1580,6 +1584,9 @@ impl Engine {
             Err(e @ Error::AddressExpired { .. }) => {
                 let message = e.to_string();
                 tracing::warn!(id, error = %message, "address expired; holding for a new one");
+                if let Some(item) = self.inner.items.write().get_mut(id) {
+                    item.address_expired = true;
+                }
                 let _ = self.set_status(id, DownloadStatus::Paused, Some(message));
             }
             Err(e) => {

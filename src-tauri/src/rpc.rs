@@ -265,6 +265,7 @@ struct AddItem {
 impl From<AddItem> for DownloadSpec {
     fn from(i: AddItem) -> Self {
         DownloadSpec {
+            media: None,
             url: i.url,
             headers: i.headers,
             filename: i.filename,

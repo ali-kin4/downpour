@@ -27,6 +27,7 @@ fn engine_with(settings: Settings) -> Engine {
 
 fn spec(url: &str, dir: &Path, name: &str, mode: StartMode) -> DownloadSpec {
     DownloadSpec {
+        media: None,
         url: url.to_string(),
         headers: BTreeMap::new(),
         filename: Some(name.to_string()),
@@ -2771,4 +2772,70 @@ async fn a_capture_from_elsewhere_or_that_fits_two_is_never_attached() {
     );
     assert!(engine.get(&id).unwrap().awaiting_address_until.is_some());
     assert_eq!(engine.get(&id).unwrap().url, server.url("/file"));
+}
+
+/// Where a media download's address came from survives a restart: an address
+/// that expires overnight is exactly the one the app must be able to resolve
+/// again the next morning.
+#[tokio::test]
+async fn a_media_downloads_source_page_and_format_survive_a_restart() {
+    let dir = TempDir::new();
+    let path = dir.join("downpour.db");
+    let media = downpour_core::model::MediaSource {
+        page_url: "https://video.example/watch?v=abc".into(),
+        format_id: "137".into(),
+    };
+    let id = {
+        let engine = Engine::new(EngineConfig {
+            db_path: path.clone(),
+        })
+        .unwrap();
+        let mut s = spec(
+            "https://cdn.example/v.mp4?sig=1",
+            &dir.0,
+            "v.mp4",
+            StartMode::AddOnly,
+        );
+        s.media = Some(media.clone());
+        let id = engine.add(s).unwrap();
+        // A plain download next to it keeps no source at all.
+        engine
+            .add(spec(
+                "https://example.com/f.bin",
+                &dir.0,
+                "f.bin",
+                StartMode::AddOnly,
+            ))
+            .unwrap();
+        id
+    };
+    let engine = Engine::new(EngineConfig { db_path: path }).unwrap();
+    let items = engine.list();
+    let item = items.iter().find(|i| i.id == id).unwrap();
+    assert_eq!(item.media.as_ref(), Some(&media));
+    assert!(items
+        .iter()
+        .filter(|i| i.id != id)
+        .all(|i| i.media.is_none()));
+}
+
+#[tokio::test]
+async fn an_expired_address_is_flagged_until_a_new_one_arrives() {
+    let data = payload(6 * 1024 * 1024);
+    let server = common::start(data).await;
+    let (engine, id, _dir) = partly_downloaded(&server).await;
+    assert!(
+        !engine.get(&id).unwrap().address_expired,
+        "a user pause is not expiry"
+    );
+
+    server.state.set_mode(Mode::Forbidden).await;
+    let item = start_and_settle(&engine, &id).await;
+    assert!(item.address_expired, "{item:?}");
+
+    server.state.set_mode(Mode::Honest).await;
+    engine
+        .refresh_address(&id, &server.url("/file/n"), None)
+        .unwrap();
+    assert!(!engine.get(&id).unwrap().address_expired);
 }

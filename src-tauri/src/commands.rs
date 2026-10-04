@@ -100,6 +100,7 @@ pub struct AddRequest {
 impl From<AddRequest> for DownloadSpec {
     fn from(r: AddRequest) -> Self {
         DownloadSpec {
+            media: None,
             url: r.url,
             headers: r.headers,
             filename: r.filename,
