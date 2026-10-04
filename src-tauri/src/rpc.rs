@@ -25,6 +25,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use downpour_core::model::{DownloadSpec, StartMode};
+use downpour_core::AddressClaim;
 use downpour_core::Engine;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -388,6 +389,42 @@ async fn add_one(
         )
             .into_response());
     }
+    // A download the user asked to refresh is waiting for exactly this: the
+    // same file started again in the browser. It goes to that download as its
+    // new address, not into the list as a second copy. The engine attaches it
+    // only on a clear match; anything less becomes an ordinary capture below,
+    // because attaching on a guess is worse than a duplicate the user can
+    // delete. Any 2xx tells the extension to take the browser's copy away.
+    match state.engine.claim_new_address(
+        &item.url,
+        &item.headers,
+        item.filename.as_deref(),
+        item.size_hint,
+    ) {
+        AddressClaim::Attached(id) => {
+            let filename = state
+                .engine
+                .get(&id)
+                .map(|i| i.filename)
+                .unwrap_or_default();
+            return Ok((
+                StatusCode::OK,
+                Json(AddedOne {
+                    id,
+                    filename,
+                    status: "refreshed".into(),
+                }),
+            ));
+        }
+        AddressClaim::Ambiguous(ids) => {
+            tracing::info!(
+                candidates = ids.len(),
+                "a capture partly matches downloads waiting for a new address; adding it as new"
+            );
+        }
+        AddressClaim::NoMatch => {}
+    }
+
     if should_confirm(
         item.source.as_deref(),
         item.start_mode,

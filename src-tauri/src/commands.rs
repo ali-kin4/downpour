@@ -169,6 +169,36 @@ pub fn pause_download(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     state.engine.pause(&id).map_err(err)
 }
 
+/// How long a download waits for the user to start it again in the browser
+/// before the "refresh download address" request lapses.
+const ADDRESS_WAIT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// "Refresh download address": wait for the user to start this download again
+/// in the browser, and take that capture as its new address.
+#[tauri::command]
+pub fn refresh_address_wait(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state
+        .engine
+        .await_new_address(&id, ADDRESS_WAIT)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub fn refresh_address_cancel(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.engine.cancel_new_address(&id).map_err(err)
+}
+
+/// A new address typed or pasted by the user. The download keeps its request
+/// context and starts; whether its bytes are kept is the resume rules' call.
+#[tauri::command]
+pub fn refresh_address_set(state: State<'_, AppState>, id: String, url: String) -> CmdResult<()> {
+    state
+        .engine
+        .refresh_address(&id, url.trim(), None)
+        .and_then(|()| state.engine.start(&id))
+        .map_err(err)
+}
+
 #[tauri::command]
 pub fn cancel_download(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     state.engine.cancel(&id).map_err(err)

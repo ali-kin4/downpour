@@ -45,6 +45,9 @@ pub fn run() {
         .on_window_event(handle_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::list_downloads,
+            commands::refresh_address_wait,
+            commands::refresh_address_cancel,
+            commands::refresh_address_set,
             commands::get_download,
             commands::get_stats,
             commands::get_settings,
