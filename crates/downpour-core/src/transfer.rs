@@ -66,11 +66,6 @@ const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 /// a download that silently sleeps for an hour looks like a hang.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
 
-/// How long the final checkpoint of a run may wait for the disk before it
-/// settles for the last snapshot already synced. Short, because a pause the
-/// user is watching waits on it.
-const FINAL_SYNC_WAIT: Duration = Duration::from_millis(250);
-
 const CONTROL_RUN: u8 = 0;
 const CONTROL_PAUSE: u8 = 1;
 const CONTROL_CANCEL: u8 = 2;
@@ -461,6 +456,13 @@ async fn segmented_transfer(
 ) -> Result<u64> {
     let total = remote.size.expect("segmented path requires a known size");
 
+    // A paused run may still be writing its last checkpoint for this file in
+    // the background (see `finish_in_background`). Reading the sidecar before
+    // that lands would resume from an older snapshot -- safe, but it would
+    // refetch what the pause had kept -- and writing one alongside it would
+    // race it.
+    drop(finalizer(meta_path).lock_owned().await);
+
     let (segments, resumed) = match load_resumable(meta_path, part_path, remote, total) {
         Some(sidecar) => {
             tracing::info!(
@@ -513,11 +515,10 @@ async fn segmented_transfer(
     // The last snapshot whose bytes are known to be on the disk. The final
     // write below records this rather than syncing again, which is what keeps
     // a pause from waiting on the disk (see `record`).
-    let durable = {
+    {
         let first = sync_part(&table, part_path).await?;
-        record(first.clone(), meta_path, remote, total).await?;
-        Arc::new(Mutex::new(first))
-    };
+        record(first, meta_path, remote, total).await?;
+    }
 
     let mut workers = tokio::task::JoinSet::new();
     for worker_id in 0..worker_count {
@@ -563,7 +564,6 @@ async fn segmented_transfer(
     // lands late. A pause therefore never queues behind the disk.
     let saver = {
         let table = Arc::clone(&table);
-        let durable = Arc::clone(&durable);
         let part_path = part_path.to_path_buf();
         let meta_path = meta_path.to_path_buf();
         let remote = remote.clone();
@@ -584,10 +584,7 @@ async fn segmented_transfer(
                     synced = sync_part(&table, &part_path) => synced,
                 };
                 let result = match synced {
-                    Ok(segments) => {
-                        *durable.lock() = segments.clone();
-                        record(segments, &meta_path, &remote, total).await
-                    }
+                    Ok(segments) => record(segments, &meta_path, &remote, total).await,
                     Err(e) => Err(e),
                 };
                 if let Err(e) = result {
@@ -646,21 +643,41 @@ async fn segmented_transfer(
         return Err(first_error.unwrap());
     }
 
-    // Always write the final state, including on pause: this is precisely the
-    // snapshot a later resume depends on. The cursors as they stand are synced
-    // and recorded if the disk can do that promptly, which it nearly always
-    // can. On a disk too busy to, the last snapshot already proven durable is
-    // recorded instead: a pause must not wait on the disk, and that snapshot
-    // claims nothing the disk does not hold. The sync that missed the deadline
-    // finishes on its own, with no sidecar written after it.
-    let last = match tokio::time::timeout(FINAL_SYNC_WAIT, sync_part(&table, part_path)).await {
-        Ok(Ok(segments)) => segments,
-        _ => durable.lock().clone(),
+    // The final checkpoint: the snapshot a later resume depends on, synced
+    // before it is recorded like every other.
+    let last_checkpoint = {
+        let table = Arc::clone(&table);
+        let part_path = part_path.to_path_buf();
+        let meta_path = meta_path.to_path_buf();
+        let remote = remote.clone();
+        async move {
+            // The download may have been removed with its files while this
+            // waited for the disk; a sidecar for bytes that are gone would only
+            // be litter.
+            if !part_path.exists() {
+                return Ok(());
+            }
+            let segments = sync_part(&table, &part_path).await?;
+            record(segments, &meta_path, &remote, total).await
+        }
     };
-    record(last, meta_path, remote, total).await?;
 
-    if let Some(e) = first_error {
-        return Err(e);
+    match first_error {
+        // Nothing to keep: the download is being thrown away.
+        Some(Error::Cancelled) => return Err(Error::Cancelled),
+        // A pause must not wait on the disk -- on a busy one a sync takes
+        // seconds, and the user is watching -- but it must keep its progress.
+        // So the checkpoint completes in the background, fully synced, and the
+        // next run of this file waits for it before reading the sidecar.
+        Some(Error::Paused) => {
+            finish_in_background(meta_path, last_checkpoint);
+            return Err(Error::Paused);
+        }
+        Some(e) => {
+            last_checkpoint.await?;
+            return Err(e);
+        }
+        None => last_checkpoint.await?,
     }
 
     let done = {
@@ -752,6 +769,49 @@ async fn sync_part(table: &Arc<Mutex<SegmentTable>>, part_path: &Path) -> Result
     })
     .await
     .map_err(|e| Error::Other(format!("checkpoint task failed: {e}")))?
+}
+
+/// One lock per sidecar, held by a checkpoint finishing in the background.
+fn finalizer(meta_path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::LazyLock<
+        Mutex<std::collections::HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::LazyLock::new(Default::default);
+    let mut locks = LOCKS.lock();
+    // Forget the locks nobody holds, so the map stays the size of the
+    // checkpoints actually in flight.
+    locks.retain(|_, l| Arc::strong_count(l) > 1);
+    Arc::clone(locks.entry(meta_path.to_path_buf()).or_default())
+}
+
+/// Runs a paused transfer's last checkpoint without making the pause wait for
+/// it. The lock is taken before this returns, so a resume that starts the
+/// instant after cannot read the sidecar ahead of it.
+fn finish_in_background(
+    meta_path: &Path,
+    checkpoint: impl std::future::Future<Output = Result<()>> + Send + 'static,
+) {
+    let lock = finalizer(meta_path);
+    match Arc::clone(&lock).try_lock_owned() {
+        Ok(held) => {
+            tokio::spawn(async move {
+                if let Err(e) = checkpoint.await {
+                    tracing::warn!(error = %e, "failed to write the final resume checkpoint");
+                }
+                drop(held);
+            });
+        }
+        // Only another background checkpoint of this same file holds it, and
+        // this one is newer: queue behind it.
+        Err(_) => {
+            tokio::spawn(async move {
+                let held = lock.lock_owned().await;
+                if let Err(e) = checkpoint.await {
+                    tracing::warn!(error = %e, "failed to write the final resume checkpoint");
+                }
+                drop(held);
+            });
+        }
+    }
 }
 
 /// Writes the sidecar for a snapshot [`sync_part`] has already made durable.
