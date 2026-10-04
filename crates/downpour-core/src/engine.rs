@@ -37,6 +37,17 @@ const PUMP_INTERVAL: Duration = Duration::from_millis(500);
 
 const EVENT_CAPACITY: usize = 4096;
 
+/// What became of a capture offered to downloads waiting for a new address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AddressClaim {
+    /// It was the new address of this download, which is now starting.
+    Attached(DownloadId),
+    /// It could belong to any of these; the user has to say which, if any.
+    Ambiguous(Vec<DownloadId>),
+    /// It belongs to none of them.
+    NoMatch,
+}
+
 /// How many times one run starts over because the file changed underneath it.
 ///
 /// A file republished once mid-download deserves a fresh copy, so the first
@@ -286,6 +297,7 @@ impl Engine {
             };
 
             let item = DownloadItem {
+                awaiting_address_until: None,
                 id: uuid::Uuid::new_v4().to_string(),
                 url,
                 final_url: None,
@@ -474,10 +486,108 @@ impl Engine {
                 item.headers = headers;
             }
             item.error = None;
+            // A new address, however it arrived, is what the wait was for.
+            item.awaiting_address_until = None;
         }
         self.persist(id);
         self.emit_status(id);
         Ok(())
+    }
+
+    /// Starts waiting, for `ttl`, for the user to start this download again in
+    /// the browser; the capture then becomes its new address (see
+    /// [`claim_new_address`](Self::claim_new_address)).
+    pub fn await_new_address(&self, id: &str, ttl: Duration) -> Result<()> {
+        {
+            let mut items = self.inner.items.write();
+            let item = items
+                .get_mut(id)
+                .ok_or_else(|| Error::NotFound(id.into()))?;
+            if item.status.is_active() || self.inner.running.read().contains_key(id) {
+                return Err(Error::Other(
+                    "pause the download before giving it a new address".into(),
+                ));
+            }
+            item.awaiting_address_until = Some(now_unix() + ttl.as_secs() as i64);
+        }
+        self.emit_status(id);
+        Ok(())
+    }
+
+    /// Stops waiting for a new address.
+    pub fn cancel_new_address(&self, id: &str) -> Result<()> {
+        {
+            let mut items = self.inner.items.write();
+            let item = items
+                .get_mut(id)
+                .ok_or_else(|| Error::NotFound(id.into()))?;
+            item.awaiting_address_until = None;
+        }
+        self.emit_status(id);
+        Ok(())
+    }
+
+    /// Offers a captured download to the downloads waiting for a new address.
+    ///
+    /// Exactly one waiting download it fits strongly (see [`crate::refresh`])
+    /// takes it: the capture's address and request context replace the old
+    /// ones and the download starts, where the resume rules decide whether its
+    /// bytes are kept. More than one candidate, or only partial fits, is
+    /// `Ambiguous` -- the caller asks the user, it does not guess. Anything
+    /// else is `NoMatch`, an ordinary new download.
+    pub fn claim_new_address(
+        &self,
+        url: &str,
+        headers: &std::collections::BTreeMap<String, String>,
+        filename: Option<&str>,
+        size: Option<u64>,
+    ) -> AddressClaim {
+        let referer = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("referer"))
+            .map(|(_, v)| v.as_str());
+        let candidate = crate::refresh::Candidate {
+            url,
+            filename,
+            size,
+            referer,
+        };
+        let now = now_unix();
+        let (strong, partial) = {
+            let items = self.inner.items.read();
+            let mut strong = Vec::new();
+            let mut partial = Vec::new();
+            for item in items.values() {
+                let waiting = item.awaiting_address_until.is_some_and(|t| t > now)
+                    && !item.status.is_active();
+                if !waiting {
+                    continue;
+                }
+                match crate::refresh::fit(item, &candidate) {
+                    crate::refresh::Fit::Strong => strong.push(item.id.clone()),
+                    crate::refresh::Fit::Partial => partial.push(item.id.clone()),
+                    crate::refresh::Fit::None => {}
+                }
+            }
+            (strong, partial)
+        };
+        match (strong.as_slice(), partial.is_empty()) {
+            ([id], _) => {
+                let id = id.clone();
+                if self
+                    .refresh_address(&id, url, Some(headers.clone()))
+                    .and_then(|()| self.start(&id))
+                    .is_ok()
+                {
+                    AddressClaim::Attached(id)
+                } else {
+                    AddressClaim::NoMatch
+                }
+            }
+            ([], true) => AddressClaim::NoMatch,
+            ([], false) => AddressClaim::Ambiguous(partial),
+            _ => AddressClaim::Ambiguous(strong),
+        }
     }
 
     pub fn pause(&self, id: &str) -> Result<()> {

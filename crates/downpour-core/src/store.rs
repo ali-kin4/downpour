@@ -422,6 +422,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadItem> {
     let headers_raw: String = row.get(7)?;
     let status_raw: String = row.get(8)?;
     Ok(DownloadItem {
+        awaiting_address_until: None,
         id: row.get(0)?,
         url: row.get(1)?,
         final_url: row.get(2)?,
@@ -495,6 +496,7 @@ mod tests {
         let mut headers = BTreeMap::new();
         headers.insert("Cookie".into(), "session=abc".into());
         DownloadItem {
+            awaiting_address_until: None,
             id: id.into(),
             url: "https://example.com/f.bin".into(),
             final_url: Some("https://cdn.example.com/f.bin".into()),

@@ -24,6 +24,7 @@ pub mod model;
 pub mod naming;
 pub mod origin;
 pub mod probe;
+pub mod refresh;
 pub mod resume;
 pub mod scheduler;
 pub mod settings;
@@ -34,7 +35,7 @@ pub mod transfer;
 
 mod engine;
 
-pub use engine::{Engine, EngineConfig, QueueStats};
+pub use engine::{AddressClaim, Engine, EngineConfig, QueueStats};
 pub use error::{Error, Result};
 pub use model::{
     DownloadId, DownloadItem, DownloadSpec, DownloadStatus, EngineEvent, RemoteInfo, Segment,

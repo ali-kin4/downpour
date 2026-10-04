@@ -2658,3 +2658,117 @@ async fn refreshing_a_running_download_is_refused() {
         .refresh_address(&id, "ftp://example.com/x", None)
         .is_err());
 }
+
+#[tokio::test]
+async fn a_retriggered_download_becomes_the_new_address_of_the_one_waiting_for_it() {
+    let data = payload(6 * 1024 * 1024);
+    let expected = sha256(&data);
+    let server = common::start(data.clone()).await;
+    let (engine, id, _dir) = partly_downloaded(&server).await;
+    engine
+        .await_new_address(&id, Duration::from_secs(600))
+        .unwrap();
+    assert!(engine.get(&id).unwrap().awaiting_address_until.is_some());
+
+    let fresh = server.url("/file/new-signature");
+    let mut headers = BTreeMap::new();
+    headers.insert("Cookie".to_string(), "session=fresh".to_string());
+    server.state.reset_counters();
+    let claim =
+        engine.claim_new_address(&fresh, &headers, Some("big.bin"), Some(data.len() as u64));
+    assert_eq!(claim, downpour_core::AddressClaim::Attached(id.clone()));
+
+    let e = engine.clone();
+    let i = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(30), move || {
+            e.get(&i).map(|x| x.status) == Some(DownloadStatus::Completed)
+        })
+        .await,
+        "{:?}",
+        engine.get(&id)
+    );
+    let item = engine.get(&id).unwrap();
+    assert_eq!(item.url, fresh);
+    assert_eq!(
+        item.headers.get("Cookie").map(String::as_str),
+        Some("session=fresh")
+    );
+    assert!(item.awaiting_address_until.is_none());
+    assert_eq!(
+        sha256(&std::fs::read(item.target_path()).unwrap()),
+        expected
+    );
+    assert!(
+        server.state.bytes_served() < data.len(),
+        "the new address refetched the whole file"
+    );
+}
+
+#[tokio::test]
+async fn only_a_download_that_is_waiting_can_be_given_a_capture() {
+    // The browser's next download is not anybody's new address unless the
+    // user asked for one -- and then only within the time they were given.
+    let data = payload(6 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    let (engine, id, _dir) = partly_downloaded(&server).await;
+    let url = server.url("/file/again");
+    let none = BTreeMap::new();
+    let size = Some(data.len() as u64);
+
+    assert_eq!(
+        engine.claim_new_address(&url, &none, Some("big.bin"), size),
+        downpour_core::AddressClaim::NoMatch,
+        "nothing was waiting"
+    );
+
+    engine
+        .await_new_address(&id, Duration::from_secs(0))
+        .unwrap();
+    assert_eq!(
+        engine.claim_new_address(&url, &none, Some("big.bin"), size),
+        downpour_core::AddressClaim::NoMatch,
+        "the wait had run out"
+    );
+
+    engine
+        .await_new_address(&id, Duration::from_secs(600))
+        .unwrap();
+    engine.cancel_new_address(&id).unwrap();
+    assert_eq!(
+        engine.claim_new_address(&url, &none, Some("big.bin"), size),
+        downpour_core::AddressClaim::NoMatch,
+        "the wait was cancelled"
+    );
+    assert_ne!(engine.get(&id).unwrap().url, url);
+}
+
+#[tokio::test]
+async fn a_capture_from_elsewhere_or_that_fits_two_is_never_attached() {
+    let data = payload(6 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    let (engine, id, _dir) = partly_downloaded(&server).await;
+    engine
+        .await_new_address(&id, Duration::from_secs(600))
+        .unwrap();
+    let size = Some(data.len() as u64);
+    let none = BTreeMap::new();
+
+    // Same name, same size, unrelated site: a different file.
+    assert_eq!(
+        engine.claim_new_address(
+            "https://unrelated.example/big.bin",
+            &none,
+            Some("big.bin"),
+            size
+        ),
+        downpour_core::AddressClaim::NoMatch
+    );
+    // Only the name matches: the user must be asked.
+    assert_eq!(
+        engine.claim_new_address(&server.url("/file/x"), &none, Some("big.bin"), None),
+        downpour_core::AddressClaim::Ambiguous(vec![id.clone()])
+    );
+    assert!(engine.get(&id).unwrap().awaiting_address_until.is_some());
+    assert_eq!(engine.get(&id).unwrap().url, server.url("/file"));
+}

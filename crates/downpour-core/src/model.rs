@@ -328,6 +328,12 @@ pub struct DownloadItem {
     /// retention prunes against.
     #[serde(default)]
     pub removed_at: Option<i64>,
+    /// Unix seconds until which this download waits for the user to start it
+    /// again in the browser, so the capture can become its new address.
+    /// Deliberately not stored: a wait the user started minutes ago does not
+    /// outlive the app.
+    #[serde(default)]
+    pub awaiting_address_until: Option<i64>,
 }
 
 impl DownloadItem {
