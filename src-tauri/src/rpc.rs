@@ -367,6 +367,17 @@ async fn capture_settings(State(state): State<RpcState>) -> Json<CaptureSettings
     })
 }
 
+/// The addresses this app resolved from media pages, so a download the
+/// extension adds from one keeps the page it came from.
+fn resolved_sources(state: &RpcState) -> &crate::media::ResolvedSources {
+    use tauri::Manager;
+    &state
+        .app
+        .state::<crate::state::AppState>()
+        .inner()
+        .resolved_sources
+}
+
 async fn add_one(
     State(state): State<RpcState>,
     Json(item): Json<AddItem>,
@@ -476,9 +487,11 @@ async fn add_one(
         ));
     }
 
+    let mut spec: DownloadSpec = item.into();
+    resolved_sources(&state).attach(&mut spec);
     let id = state
         .engine
-        .add(item.into())
+        .add(spec)
         .map_err(|e| internal(&e.to_string()))?;
     let item = state.engine.get(&id);
     Ok((
@@ -507,7 +520,11 @@ async fn add_batch(
         .items
         .into_iter()
         .filter(|i| is_http_url(&i.url))
-        .map(Into::into)
+        .map(|i| {
+            let mut spec: DownloadSpec = i.into();
+            resolved_sources(&state).attach(&mut spec);
+            spec
+        })
         .collect();
 
     let ids = state

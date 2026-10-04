@@ -41,13 +41,14 @@
 //!
 //! [yt-dlp]: https://github.com/yt-dlp/yt-dlp
 
+use downpour_core::model::MediaSource;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Errors cross the IPC boundary as plain strings, matching `commands.rs`.
 type CmdResult<T> = Result<T, String>;
@@ -583,7 +584,7 @@ pub async fn resolve_media(
     let filename = downpour_core::naming::sanitize(&format!("{title}.{}", format.ext))
         .unwrap_or_else(|| format!("{format_id}.{}", format.ext));
 
-    Ok(ResolvedMedia {
+    let resolved = ResolvedMedia {
         url: media_url,
         headers: required_headers(raw, entry),
         filename,
@@ -592,7 +593,82 @@ pub async fn resolve_media(
         ext: format.ext.clone(),
         progressive: format.progressive,
         direct_http: format.direct_http,
-    })
+    };
+    if let Some(state) = app.try_state::<crate::state::AppState>() {
+        state.resolved_sources.remember(
+            &resolved.url,
+            MediaSource {
+                page_url: url.clone(),
+                format_id: resolved.format_id.clone(),
+            },
+        );
+    }
+    Ok(resolved)
+}
+
+// ---------------------------------------------------------------------------
+// Remembering where an address came from
+// ---------------------------------------------------------------------------
+
+/// Recently resolved addresses, and the page and format each came from.
+///
+/// Resolving and adding are two separate requests -- from the app's own media
+/// dialog and from the browser extension alike -- and neither carries the page
+/// along to the add. Rather than change both callers and the frozen v1
+/// protocol, the app remembers what it resolved, and an add of one of those
+/// addresses gets its source attached. Bounded in count and age: a source only
+/// matters for the add that follows its resolve.
+#[derive(Default)]
+pub struct ResolvedSources(
+    parking_lot::Mutex<std::collections::VecDeque<(String, MediaSource, Instant)>>,
+);
+
+impl ResolvedSources {
+    const KEEP_FOR: Duration = Duration::from_secs(30 * 60);
+    const KEEP_AT_MOST: usize = 64;
+
+    pub fn remember(&self, url: &str, source: MediaSource) {
+        let mut list = self.0.lock();
+        list.retain(|(u, _, _)| u != url);
+        list.push_back((url.to_string(), source, Instant::now()));
+        while list.len() > Self::KEEP_AT_MOST {
+            list.pop_front();
+        }
+    }
+
+    pub fn lookup(&self, url: &str) -> Option<MediaSource> {
+        let mut list = self.0.lock();
+        list.retain(|(_, _, at)| at.elapsed() < Self::KEEP_FOR);
+        list.iter()
+            .find(|(u, _, _)| u == url)
+            .map(|(_, s, _)| s.clone())
+    }
+
+    /// Gives `spec` the source of its address, if this app resolved it.
+    pub fn attach(&self, spec: &mut downpour_core::model::DownloadSpec) {
+        if spec.media.is_none() {
+            spec.media = self.lookup(&spec.url);
+        }
+    }
+}
+
+/// How many times one download's address is resolved again automatically
+/// before it is left for the user. A page that keeps handing out dead links
+/// must end in a paused download with its reason, not a loop.
+pub const MAX_AUTO_REFRESHES: u32 = 3;
+
+/// The page and format to resolve again, if `item` is a media download that
+/// just stopped because its address expired and has refreshes left.
+pub fn wants_auto_refresh(
+    item: &downpour_core::model::DownloadItem,
+    refreshes_so_far: u32,
+) -> Option<MediaSource> {
+    let stopped_for_it =
+        item.address_expired && item.status == downpour_core::DownloadStatus::Paused;
+    if !stopped_for_it || refreshes_so_far >= MAX_AUTO_REFRESHES {
+        return None;
+    }
+    item.media.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -910,6 +986,89 @@ fn emit(app: &AppHandle, progress: InstallProgress) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn src(page: &str) -> MediaSource {
+        MediaSource {
+            page_url: page.into(),
+            format_id: "22".into(),
+        }
+    }
+
+    #[test]
+    fn a_resolved_address_keeps_its_page_for_the_add_that_follows() {
+        let mem = ResolvedSources::default();
+        mem.remember("https://cdn/a?sig=1", src("https://v/watch?a"));
+        assert_eq!(
+            mem.lookup("https://cdn/a?sig=1"),
+            Some(src("https://v/watch?a"))
+        );
+        assert_eq!(mem.lookup("https://cdn/other"), None);
+
+        let mut spec = downpour_core::model::DownloadSpec {
+            media: None,
+            url: "https://cdn/a?sig=1".into(),
+            headers: Default::default(),
+            filename: None,
+            dest_dir: Default::default(),
+            connections: None,
+            category: None,
+            start_mode: Default::default(),
+            checksum: None,
+            source: None,
+        };
+        mem.attach(&mut spec);
+        assert_eq!(spec.media, Some(src("https://v/watch?a")));
+    }
+
+    #[test]
+    fn remembered_addresses_are_bounded() {
+        let mem = ResolvedSources::default();
+        for i in 0..ResolvedSources::KEEP_AT_MOST + 10 {
+            mem.remember(&format!("https://cdn/{i}"), src("https://v"));
+        }
+        assert_eq!(mem.lookup("https://cdn/0"), None, "the oldest went first");
+        assert!(mem
+            .lookup(&format!(
+                "https://cdn/{}",
+                ResolvedSources::KEEP_AT_MOST + 9
+            ))
+            .is_some());
+    }
+
+    #[test]
+    fn only_an_expired_media_download_with_refreshes_left_is_refreshed() {
+        let mut item: downpour_core::model::DownloadItem =
+            serde_json::from_value(serde_json::json!({
+                "id": "x", "url": "https://cdn/a", "finalUrl": null, "filename": "v.mp4",
+                "userNamed": false, "nameLocked": true, "destDir": "", "headers": {},
+                "status": "paused", "totalBytes": 10, "downloadedBytes": 5, "speedBps": 0,
+                "etaSecs": null, "connections": 1, "supportsRange": true, "category": null,
+                "source": null, "scheduled": false, "error": "expired", "checksum": null,
+                "createdAt": 0, "sequence": 0, "startedAt": null, "completedAt": null,
+                "elapsedMs": 0, "addressExpired": true,
+                "media": {"pageUrl": "https://v/watch?a", "formatId": "22"}
+            }))
+            .unwrap();
+        assert_eq!(wants_auto_refresh(&item, 0), Some(src("https://v/watch?a")));
+        assert_eq!(
+            wants_auto_refresh(&item, MAX_AUTO_REFRESHES),
+            None,
+            "out of refreshes"
+        );
+        item.address_expired = false;
+        assert_eq!(
+            wants_auto_refresh(&item, 0),
+            None,
+            "a user pause is not expiry"
+        );
+        item.address_expired = true;
+        item.media = None;
+        assert_eq!(
+            wants_auto_refresh(&item, 0),
+            None,
+            "nothing to resolve from"
+        );
+    }
 
     #[test]
     fn reads_a_checksum_line() {

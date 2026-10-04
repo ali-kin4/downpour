@@ -30,6 +30,9 @@ pub struct AppState {
     /// lost. The panel reads this list when it loads and the event only tells
     /// an *already open* panel that the list has grown.
     pub pending: parking_lot::Mutex<Vec<PendingDownload>>,
+    /// Addresses this app resolved from media pages, so an add of one keeps
+    /// the page it came from (see `media::ResolvedSources`).
+    pub resolved_sources: crate::media::ResolvedSources,
 }
 
 /// A download waiting for the user to say yes.
@@ -54,6 +57,7 @@ impl AppState {
             pairing_until: std::sync::atomic::AtomicI64::new(0),
             pending: parking_lot::Mutex::new(Vec::new()),
             rpc_port: std::sync::atomic::AtomicU16::new(0),
+            resolved_sources: Default::default(),
         }
     }
 }

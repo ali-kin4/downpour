@@ -116,7 +116,9 @@ impl From<AddRequest> for DownloadSpec {
 
 #[tauri::command]
 pub fn add_download(state: State<'_, AppState>, request: AddRequest) -> CmdResult<String> {
-    state.engine.add(request.into()).map_err(err)
+    let mut spec: DownloadSpec = request.into();
+    state.resolved_sources.attach(&mut spec);
+    state.engine.add(spec).map_err(err)
 }
 
 #[tauri::command]
@@ -124,10 +126,15 @@ pub fn add_downloads(
     state: State<'_, AppState>,
     requests: Vec<AddRequest>,
 ) -> CmdResult<Vec<String>> {
-    state
-        .engine
-        .add_many(requests.into_iter().map(Into::into).collect())
-        .map_err(err)
+    let specs = requests
+        .into_iter()
+        .map(|r| {
+            let mut spec: DownloadSpec = r.into();
+            state.resolved_sources.attach(&mut spec);
+            spec
+        })
+        .collect();
+    state.engine.add_many(specs).map_err(err)
 }
 
 /// Backs "paste a list of links" and dropping a `.txt` file on the window.

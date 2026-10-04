@@ -165,6 +165,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     state::spawn_event_bridge(handle.clone(), &engine);
     spawn_power_watcher(handle.clone(), &engine);
     spawn_progress_window_watcher(handle.clone(), &engine);
+    spawn_media_refresher(handle.clone(), &engine);
     clipboard::spawn(handle.clone(), engine.clone());
     tray::build(&handle)?;
     apply_autostart(&handle);
@@ -215,6 +216,64 @@ fn spawn_progress_window_watcher(app: tauri::AppHandle, engine: &Engine) {
             if let Err(e) = progress_window::open(&app) {
                 tracing::warn!(error = %e, "could not open the progress window");
             }
+        }
+    });
+}
+
+/// Resolves a fresh address for a media download whose address expired.
+///
+/// A media file's direct address is signed for a few hours; the page it came
+/// from lasts. When one expires mid-download, resolving the page again and
+/// giving the download the new address is what the user would otherwise do by
+/// hand -- and doing it by hand used to mean adding the video again and losing
+/// what was already downloaded. The new address only changes where the bytes
+/// come from: whether the ones on disk are kept is the resume rules' call.
+///
+/// Bounded per download (`media::MAX_AUTO_REFRESHES`): a page that keeps
+/// handing out dead links ends as a paused download with its reason, which the
+/// user can still refresh by hand.
+fn spawn_media_refresher(app: tauri::AppHandle, engine: &Engine) {
+    use tokio::sync::broadcast::error::RecvError;
+    let mut rx = engine.subscribe();
+    let engine = engine.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut refreshes: std::collections::HashMap<String, u32> = Default::default();
+        loop {
+            let id = match rx.recv().await {
+                Ok(EngineEvent::StatusChanged { id, .. }) => id,
+                Ok(EngineEvent::Completed { id, .. }) | Ok(EngineEvent::Removed { id }) => {
+                    refreshes.remove(&id);
+                    continue;
+                }
+                Ok(_) => continue,
+                // Missing events means missing a status change, not a reason to
+                // stop watching for the rest of the session.
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            };
+            let Some(item) = engine.get(&id) else {
+                continue;
+            };
+            let so_far = refreshes.get(&id).copied().unwrap_or(0);
+            let Some(source) = media::wants_auto_refresh(&item, so_far) else {
+                continue;
+            };
+            refreshes.insert(id.clone(), so_far + 1);
+            let (app, engine) = (app.clone(), engine.clone());
+            tauri::async_runtime::spawn(async move {
+                tracing::info!(id, page = %source.page_url, "address expired; resolving the media page again");
+                match media::resolve_media(app, source.page_url, source.format_id).await {
+                    Ok(fresh) => {
+                        let attached = engine
+                            .refresh_address(&id, &fresh.url, Some(fresh.headers))
+                            .and_then(|()| engine.start(&id));
+                        if let Err(e) = attached {
+                            tracing::warn!(id, error = %e, "could not give the download its new address");
+                        }
+                    }
+                    Err(e) => tracing::warn!(id, error = %e, "could not resolve a new address"),
+                }
+            });
         }
     });
 }
