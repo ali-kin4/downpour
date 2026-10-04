@@ -66,6 +66,11 @@ const MAX_RATE_LIMIT_RETRIES: u32 = 5;
 /// a download that silently sleeps for an hour looks like a hang.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
 
+/// How long the final checkpoint of a run may wait for the disk before it
+/// settles for the last snapshot already synced. Short, because a pause the
+/// user is watching waits on it.
+const FINAL_SYNC_WAIT: Duration = Duration::from_millis(250);
+
 const CONTROL_RUN: u8 = 0;
 const CONTROL_PAUSE: u8 = 1;
 const CONTROL_CANCEL: u8 = 2;
@@ -505,7 +510,14 @@ async fn segmented_transfer(
     .min(config.connections.max(1) as usize)
     .max(1);
 
-    checkpoint(&table, part_path, meta_path, remote, total).await?;
+    // The last snapshot whose bytes are known to be on the disk. The final
+    // write below records this rather than syncing again, which is what keeps
+    // a pause from waiting on the disk (see `record`).
+    let durable = {
+        let first = sync_part(&table, part_path).await?;
+        record(first.clone(), meta_path, remote, total).await?;
+        Arc::new(Mutex::new(first))
+    };
 
     let mut workers = tokio::task::JoinSet::new();
     for worker_id in 0..worker_count {
@@ -544,8 +556,14 @@ async fn segmented_transfer(
     // blocking pool, where an abort cannot reach it, so the only way to know
     // none is still in flight is for the saver to finish and say so.
     let (stop_saver, mut saver_stopped) = tokio::sync::oneshot::channel::<()>();
+    //
+    // A sync can take seconds on a busy disk, so the saver gives up waiting for
+    // one the moment it is told to stop: the sync carries on harmlessly on the
+    // blocking pool, and since the sidecar is written only after it, nothing
+    // lands late. A pause therefore never queues behind the disk.
     let saver = {
         let table = Arc::clone(&table);
+        let durable = Arc::clone(&durable);
         let part_path = part_path.to_path_buf();
         let meta_path = meta_path.to_path_buf();
         let remote = remote.clone();
@@ -561,7 +579,18 @@ async fn segmented_transfer(
                 if control.is_stopped() {
                     break;
                 }
-                if let Err(e) = checkpoint(&table, &part_path, &meta_path, &remote, total).await {
+                let synced = tokio::select! {
+                    _ = &mut saver_stopped => break,
+                    synced = sync_part(&table, &part_path) => synced,
+                };
+                let result = match synced {
+                    Ok(segments) => {
+                        *durable.lock() = segments.clone();
+                        record(segments, &meta_path, &remote, total).await
+                    }
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = result {
                     tracing::warn!(error = %e, "failed to persist resume sidecar");
                 }
             }
@@ -617,9 +646,18 @@ async fn segmented_transfer(
         return Err(first_error.unwrap());
     }
 
-    // Always flush the final state, including on pause: this is precisely the
-    // snapshot a later resume depends on.
-    checkpoint(&table, part_path, meta_path, remote, total).await?;
+    // Always write the final state, including on pause: this is precisely the
+    // snapshot a later resume depends on. The cursors as they stand are synced
+    // and recorded if the disk can do that promptly, which it nearly always
+    // can. On a disk too busy to, the last snapshot already proven durable is
+    // recorded instead: a pause must not wait on the disk, and that snapshot
+    // claims nothing the disk does not hold. The sync that missed the deadline
+    // finishes on its own, with no sidecar written after it.
+    let last = match tokio::time::timeout(FINAL_SYNC_WAIT, sync_part(&table, part_path)).await {
+        Ok(Ok(segments)) => segments,
+        _ => durable.lock().clone(),
+    };
+    record(last, meta_path, remote, total).await?;
 
     if let Some(e) = first_error {
         return Err(e);
@@ -684,31 +722,20 @@ fn load_resumable(
     }
 }
 
-/// Writes a resume checkpoint that the bytes on disk are guaranteed to back.
+/// Snapshots the cursors, then syncs the part file, and returns the snapshot:
+/// every byte it claims is on the disk once this returns.
 ///
-/// The order is the whole point. The cursors are read first; every byte they
-/// claim had already reached the OS before its cursor moved (see
-/// `stream_range`). The part file is then synced, so those bytes are on the
-/// disk, and only then is the sidecar written that vouches for them. Saved
-/// the other way round -- or without the sync -- a power cut can keep the
-/// sidecar and lose the data, and the resume after it treats a run of zeros
-/// as downloaded: a finished file, the right length, silently wrong.
+/// The order is the whole point. Every byte the cursors claim had already
+/// reached the OS before its cursor moved (see `stream_range`), so the sync
+/// after the snapshot covers all of it. A sidecar written from a snapshot that
+/// was never synced can survive a power cut that the data does not, and the
+/// resume after it treats a run of zeros as downloaded: a finished file, the
+/// right length, silently wrong.
 ///
-/// Runs on the blocking pool, since a sync can take as long as the disk needs.
-async fn checkpoint(
-    table: &Arc<Mutex<SegmentTable>>,
-    part_path: &Path,
-    meta_path: &Path,
-    remote: &RemoteInfo,
-    total: u64,
-) -> Result<()> {
+/// Runs on the blocking pool, since a sync takes as long as the disk needs.
+async fn sync_part(table: &Arc<Mutex<SegmentTable>>, part_path: &Path) -> Result<Vec<Segment>> {
     let segments = table.lock().snapshot();
-    let sidecar = Sidecar::new(remote.final_url.clone(), remote.clone(), segments, total);
-    // A snapshot taken mid-steal is still structurally sound, but assert it
-    // rather than writing a sidecar that will be rejected on resume.
-    sidecar.validate()?;
     let part_path = part_path.to_path_buf();
-    let meta_path = meta_path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let part = std::fs::OpenOptions::new()
             .write(true)
@@ -721,10 +748,27 @@ async fn checkpoint(
             path: part_path.clone(),
             source,
         })?;
-        sidecar.save(&meta_path)
+        Ok(segments)
     })
     .await
     .map_err(|e| Error::Other(format!("checkpoint task failed: {e}")))?
+}
+
+/// Writes the sidecar for a snapshot [`sync_part`] has already made durable.
+async fn record(
+    segments: Vec<Segment>,
+    meta_path: &Path,
+    remote: &RemoteInfo,
+    total: u64,
+) -> Result<()> {
+    let sidecar = Sidecar::new(remote.final_url.clone(), remote.clone(), segments, total);
+    // A snapshot taken mid-steal is still structurally sound, but assert it
+    // rather than writing a sidecar that will be rejected on resume.
+    sidecar.validate()?;
+    let meta_path = meta_path.to_path_buf();
+    tokio::task::spawn_blocking(move || sidecar.save(&meta_path))
+        .await
+        .map_err(|e| Error::Other(format!("checkpoint task failed: {e}")))?
 }
 
 async fn worker_loop(
