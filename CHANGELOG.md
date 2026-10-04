@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An expired download link no longer turns into a "finished" web page.**
+  Many sites answer an expired download link with a sign-in page rather than
+  an error. Resuming such a download truncated the partly downloaded file,
+  saved the sign-in page under the file's name and marked it complete. A
+  download that has bytes on disk now stops as paused with "the download
+  address has expired" when its link answers with a web page or with
+  401/403/404/410 -- at the start or partway through -- and keeps its bytes.
 - **Downloads from the same server now share its connection limit.** The
   limit of sixteen connections to one server was enforced per download, so
   three files from one host at the default eight connections each opened

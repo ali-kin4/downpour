@@ -436,6 +436,50 @@ impl Engine {
         self.set_status(id, DownloadStatus::Queued, None)
     }
 
+    /// Gives a stopped download a new address -- and, if supplied, the request
+    /// context that goes with it -- keeping its name, part file and sidecar.
+    ///
+    /// Signed, session-bound and single-use links stop working while the bytes
+    /// already fetched are still good. This attaches the new link to the same
+    /// item rather than starting a second download beside it. It decides
+    /// nothing about those bytes: the next start probes the new address and the
+    /// ordinary resume rules keep them only if the server confirms the same
+    /// file, and start over otherwise. Does not start the download.
+    pub fn refresh_address(
+        &self,
+        id: &str,
+        url: &str,
+        headers: Option<std::collections::BTreeMap<String, String>>,
+    ) -> Result<()> {
+        match url::Url::parse(url) {
+            Ok(u) if matches!(u.scheme(), "http" | "https") => {}
+            _ => return Err(Error::InvalidUrl(url.to_string())),
+        }
+        {
+            let mut items = self.inner.items.write();
+            let item = items
+                .get_mut(id)
+                .ok_or_else(|| Error::NotFound(id.into()))?;
+            // A transfer in flight is still using the old address; swapping it
+            // underneath would leave the item describing a download that is
+            // not the one running.
+            if item.status.is_active() || self.inner.running.read().contains_key(id) {
+                return Err(Error::Other(
+                    "pause the download before giving it a new address".into(),
+                ));
+            }
+            item.url = url.to_string();
+            item.final_url = None;
+            if let Some(headers) = headers {
+                item.headers = headers;
+            }
+            item.error = None;
+        }
+        self.persist(id);
+        self.emit_status(id);
+        Ok(())
+    }
+
     pub fn pause(&self, id: &str) -> Result<()> {
         if let Some(run) = self.inner.running.read().get(id) {
             // The transfer task notices, flushes its sidecar and reports
@@ -1120,7 +1164,14 @@ impl Engine {
         config: &TransferConfig,
         conflict: ConflictPolicy,
     ) -> Result<PathBuf> {
-        let mut remote = transfer::probe(ctx, &item.url).await?;
+        // Bytes from an earlier attempt, if there are any. An address that has
+        // stopped working means something different when they exist: they are
+        // worth keeping for a new address, not losing to a restart.
+        let kept = item
+            .name_locked
+            .then(|| item.dest_dir.join(format!("{}.dpmeta", item.filename)))
+            .filter(|meta| meta.exists());
+        let mut remote = probe_address(ctx, &item.url, kept.as_deref()).await?;
 
         let parsed = url::Url::parse(&remote.final_url)
             .or_else(|_| url::Url::parse(&item.url))
@@ -1168,7 +1219,7 @@ impl Engine {
                 Err(Error::RemoteChanged { reason }) if restarts < MAX_CHANGE_RESTARTS => {
                     restarts += 1;
                     tracing::warn!(%reason, restarts, "remote file changed mid-download; starting over");
-                    remote = transfer::probe(ctx, &item.url).await?;
+                    remote = probe_address(ctx, &item.url, None).await?;
                     if restarts == MAX_CHANGE_RESTARTS {
                         remote.supports_range = false;
                     }
@@ -1185,6 +1236,15 @@ impl Engine {
                     );
                     remote.supports_range = false;
                     self.adopt_remote(&item.id, &remote);
+                }
+                // A signed address that ran out partway through: the transfer
+                // has kept its sidecar, and the item needs a new address.
+                Err(Error::BadStatus { status, .. })
+                    if address_refused(status) && meta_path.exists() =>
+                {
+                    return Err(Error::AddressExpired {
+                        reason: format!("the server answered {status} partway through"),
+                    });
                 }
                 Err(e) => return Err(e),
             }
@@ -1403,6 +1463,15 @@ impl Engine {
             Err(Error::Cancelled) => {
                 let _ = self.set_status(id, DownloadStatus::Cancelled, None);
             }
+            // Nothing is wrong with the bytes on disk; the link stopped
+            // working. `Paused`, with the reason, keeps them for a refreshed
+            // address -- `Failed` would put them one "Clear finished" away
+            // from being lost.
+            Err(e @ Error::AddressExpired { .. }) => {
+                let message = e.to_string();
+                tracing::warn!(id, error = %message, "address expired; holding for a new one");
+                let _ = self.set_status(id, DownloadStatus::Paused, Some(message));
+            }
             Err(e) => {
                 let message = e.to_string();
                 // A CONNECTION THAT WENT AWAY IS NOT A FAILED DOWNLOAD.
@@ -1609,6 +1678,58 @@ fn directory_holds_files(dir: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+/// Statuses that mean "this address no longer gets you this file" rather than
+/// "this file does not exist": signed links expire into 403 or 410, session
+/// links into 401, and some sites answer an expired token with 404.
+fn address_refused(status: u16) -> bool {
+    matches!(status, 401 | 403 | 404 | 410)
+}
+
+fn is_html(content_type: &str) -> bool {
+    let mime = content_type.split(';').next().unwrap_or("").trim();
+    mime.eq_ignore_ascii_case("text/html") || mime.eq_ignore_ascii_case("application/xhtml+xml")
+}
+
+/// Probes `url`, and when bytes of the download are already on disk (`kept`,
+/// its sidecar) reports an address that has expired as exactly that.
+///
+/// The case that matters most is the web page. An expired link very often
+/// redirects to a sign-in form instead of saying 403; the page has different
+/// validators, so the resume rules would rightly refuse to keep the bytes --
+/// and a restart would then truncate the part file, save the form under the
+/// download's name and call it complete. A page where the file was not one
+/// is an expired address, never the file.
+async fn probe_address(
+    ctx: &TransferContext,
+    url: &str,
+    kept: Option<&Path>,
+) -> Result<RemoteInfo> {
+    match transfer::probe(ctx, url).await {
+        Err(Error::BadStatus { status, .. }) if kept.is_some() && address_refused(status) => {
+            Err(Error::AddressExpired {
+                reason: format!("the server answered {status}"),
+            })
+        }
+        Err(e) => Err(e),
+        Ok(remote) => {
+            if let Some(meta) = kept {
+                let now_html = remote.content_type.as_deref().is_some_and(is_html);
+                let was_html = crate::resume::Sidecar::load(meta)
+                    .ok()
+                    .and_then(|s| s.remote.content_type)
+                    .is_some_and(|ct| is_html(&ct));
+                if now_html && !was_html {
+                    return Err(Error::AddressExpired {
+                        reason: "the address now answers with a web page instead of the file"
+                            .into(),
+                    });
+                }
+            }
+            Ok(remote)
+        }
+    }
 }
 
 /// Whether the sidecar beside `name` describes a download of `url`.

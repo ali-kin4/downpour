@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{payload, sha256, wait_for, TempDir};
+use common::{payload, sha256, wait_for, Mode, TempDir};
 use downpour_core::model::{DownloadSpec, DownloadStatus, StartMode};
 use downpour_core::scheduler::{DaySet, LocalMoment, Schedule, ScheduleWindow};
 use downpour_core::settings::Settings;
@@ -2436,4 +2436,225 @@ async fn downloads_from_one_origin_share_its_connection_ceiling() {
         peak > 8,
         "peak {peak}: the downloads never overlapped, so the test proved nothing"
     );
+}
+
+// ---------------------------------------------------------------------------
+// An address that expires, and refreshing it
+// ---------------------------------------------------------------------------
+
+/// Downloads part of `/file` from `server` through an engine, pauses it, and
+/// returns the engine, the item and its folder. Leaves a part file and a
+/// sidecar, as a real interruption does.
+async fn partly_downloaded(
+    server: &common::TestServer,
+) -> (downpour_core::Engine, String, TempDir) {
+    let dir = TempDir::new();
+    let mut settings = Settings::default();
+    settings.speed_limit_bps = 2 * 1024 * 1024;
+    let engine = engine_with(settings);
+    let id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "big.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+    let e = engine.clone();
+    let i = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(20), move || {
+            e.get(&i).map(|x| x.downloaded_bytes).unwrap_or(0) > 512 * 1024
+        })
+        .await,
+        "download never got going"
+    );
+    engine.pause(&id).unwrap();
+    let e = engine.clone();
+    let i = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(10), move || {
+            e.get(&i).map(|x| x.status) == Some(DownloadStatus::Paused)
+        })
+        .await
+    );
+    assert!(
+        dir.0.join("big.bin.dpmeta").exists(),
+        "a pause leaves a sidecar"
+    );
+    (engine, id, dir)
+}
+
+/// Starts `id` again and waits until it settles: finished, failed, or paused
+/// with a reason (a user pause has none).
+async fn start_and_settle(
+    engine: &downpour_core::Engine,
+    id: &str,
+) -> downpour_core::model::DownloadItem {
+    engine.start(id).unwrap();
+    let e = engine.clone();
+    let i = id.to_string();
+    let settled = wait_for(Duration::from_secs(30), move || {
+        e.get(&i).is_some_and(|x| {
+            matches!(x.status, DownloadStatus::Completed | DownloadStatus::Failed)
+                || (x.status == DownloadStatus::Paused && x.error.is_some())
+        })
+    })
+    .await;
+    assert!(settled, "never settled: {:?}", engine.get(id));
+    engine.get(id).unwrap()
+}
+
+#[tokio::test]
+async fn an_expired_address_that_answers_with_a_login_page_never_replaces_the_file() {
+    // The link now redirects to a sign-in page. "Restarting" onto that page
+    // overwrote the partial file with HTML and called the download complete,
+    // under the file's own name.
+    let data = payload(6 * 1024 * 1024);
+    let server = common::start(data).await;
+    let (engine, id, dir) = partly_downloaded(&server).await;
+    let part_before = std::fs::read(dir.0.join("big.bin.dpart")).unwrap();
+
+    server.state.set_mode(Mode::LoginPage).await;
+    let item = start_and_settle(&engine, &id).await;
+
+    assert_eq!(
+        item.status,
+        DownloadStatus::Paused,
+        "a web page in place of the file must stop the download: {:?}",
+        item.error
+    );
+    assert!(
+        !dir.0.join("big.bin").exists(),
+        "a web page was saved as the file"
+    );
+    assert_eq!(
+        std::fs::read(dir.0.join("big.bin.dpart")).unwrap(),
+        part_before,
+        "the partial download was overwritten"
+    );
+    assert!(dir.0.join("big.bin.dpmeta").exists());
+}
+
+#[tokio::test]
+async fn an_expired_address_keeps_its_bytes_and_a_refreshed_one_resumes_them() {
+    let data = payload(6 * 1024 * 1024);
+    let expected = sha256(&data);
+    let server = common::start(data.clone()).await;
+    let (engine, id, dir) = partly_downloaded(&server).await;
+
+    server.state.set_mode(Mode::Forbidden).await;
+    let item = start_and_settle(&engine, &id).await;
+    assert_eq!(
+        item.status,
+        DownloadStatus::Paused,
+        "an expired address is not a failed download: {:?}",
+        item.error
+    );
+    assert!(dir.0.join("big.bin.dpart").exists());
+    assert!(dir.0.join("big.bin.dpmeta").exists());
+
+    // A fresh address for the same file, as a site hands out on a new visit.
+    server.state.set_mode(Mode::Honest).await;
+    let fresh = server.url("/file/fresh-token");
+    engine.refresh_address(&id, &fresh, None).unwrap();
+    server.state.reset_counters();
+    let item = start_and_settle(&engine, &id).await;
+
+    assert_eq!(item.status, DownloadStatus::Completed, "{:?}", item.error);
+    assert_eq!(item.url, fresh);
+    assert_eq!(
+        sha256(&std::fs::read(item.target_path()).unwrap()),
+        expected
+    );
+    assert!(
+        server.state.bytes_served() < data.len(),
+        "the refreshed address refetched the whole file ({} bytes): the partial download was thrown away",
+        server.state.bytes_served()
+    );
+}
+
+#[tokio::test]
+async fn a_refreshed_address_serving_a_different_file_starts_over() {
+    // Refreshing proves nothing about the bytes on disk. A new address whose
+    // file has changed must restart, never be stitched onto the old bytes.
+    let data = payload(6 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    let (engine, id, _dir) = partly_downloaded(&server).await;
+
+    let replacement: Vec<u8> = data.iter().map(|b| b ^ 0x5A).collect();
+    server
+        .state
+        .replace_all(replacement.clone(), Some("\"v2\""), None)
+        .await;
+    engine
+        .refresh_address(&id, &server.url("/file/new"), None)
+        .unwrap();
+    let item = start_and_settle(&engine, &id).await;
+
+    assert_eq!(item.status, DownloadStatus::Completed, "{:?}", item.error);
+    assert_eq!(
+        sha256(&std::fs::read(item.target_path()).unwrap()),
+        sha256(&replacement)
+    );
+}
+
+#[tokio::test]
+async fn an_address_that_expires_mid_download_pauses_with_its_bytes() {
+    // Every first-round request is cut short; by the time the retries go out
+    // the address has expired. Request 1 is the probe, 2 to 5 the segments.
+    let data = payload(32 * 1024 * 1024);
+    let server = common::start(data).await;
+    server.state.drop_connection_after(64 * 1024, 4).await;
+    server.state.mode_at_request(6, Mode::Forbidden).await;
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+    let mut s = spec(&server.url("/file"), &dir.0, "big.bin", StartMode::Start);
+    s.connections = Some(4);
+    let id = engine.add(s).unwrap();
+
+    let e = engine.clone();
+    let i = id.clone();
+    let settled = wait_for(Duration::from_secs(30), move || {
+        e.get(&i).is_some_and(|x| {
+            x.status == DownloadStatus::Failed
+                || (x.status == DownloadStatus::Paused && x.error.is_some())
+        })
+    })
+    .await;
+    assert!(settled, "never settled: {:?}", engine.get(&id));
+    let item = engine.get(&id).unwrap();
+    assert_eq!(item.status, DownloadStatus::Paused, "{:?}", item.error);
+    assert!(dir.0.join("big.bin.dpmeta").exists());
+}
+
+#[tokio::test]
+async fn refreshing_a_running_download_is_refused() {
+    let data = payload(6 * 1024 * 1024);
+    let server = common::start(data).await;
+    server.state.trickle(500);
+    let dir = TempDir::new();
+    let engine = engine_with(Settings::default());
+    let id = engine
+        .add(spec(
+            &server.url("/file"),
+            &dir.0,
+            "x.bin",
+            StartMode::Start,
+        ))
+        .unwrap();
+    let e = engine.clone();
+    let i = id.clone();
+    assert!(
+        wait_for(Duration::from_secs(10), move || {
+            e.get(&i).map(|x| x.status) == Some(DownloadStatus::Running)
+        })
+        .await
+    );
+    assert!(engine
+        .refresh_address(&id, &server.url("/file/other"), None)
+        .is_err());
+    assert!(engine
+        .refresh_address(&id, "ftp://example.com/x", None)
+        .is_err());
 }

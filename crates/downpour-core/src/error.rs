@@ -50,6 +50,13 @@ pub enum Error {
     #[error("the remote file changed since the download started ({reason})")]
     RemoteChanged { reason: String },
 
+    /// The download's address no longer leads to its file -- refused with
+    /// 401/403/404/410, or answered with a web page (a sign-in form, as a rule)
+    /// -- while bytes of it are already on disk. Not a failure of the
+    /// download: it needs a new address, and its bytes are kept for one.
+    #[error("the download address has expired ({reason}); refresh the address to continue")]
+    AddressExpired { reason: String },
+
     #[error("checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
 

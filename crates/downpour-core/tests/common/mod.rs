@@ -34,6 +34,12 @@ pub enum Mode {
     /// -- a non-empty file whose server will not serve parts of it -- and the
     /// whole file to a plain GET.
     RejectsRanges,
+    /// Answers everything with `403`: a signed address that has expired.
+    Forbidden,
+    /// Answers everything with a small `200 text/html` page: an expired
+    /// address that redirects to a login page, which is what many sites do
+    /// instead of saying 403.
+    LoginPage,
 }
 
 pub struct ServerState {
@@ -91,6 +97,9 @@ pub struct ServerState {
     /// number, before that request is answered. The only deterministic way to
     /// change the file *during* a transfer: a sleep-and-swap races the workers.
     pub pending_change: Mutex<Option<(usize, Change)>>,
+    /// A mode switch applied the moment the request counter reaches the given
+    /// number -- an address that expires partway through a download.
+    pub pending_mode: Mutex<Option<(usize, Mode)>>,
 }
 
 /// A new version of the file, applied by [`ServerState::change_at_request`].
@@ -160,6 +169,11 @@ impl ServerState {
         *self.etag.lock().await = etag.map(|s| s.to_string());
         *self.last_modified.lock().await = last_modified.map(|s| s.to_string());
     }
+    /// Switches to `mode` just before the `nth` request (counting from 1 since
+    /// the last counter reset) is answered.
+    pub async fn mode_at_request(&self, nth: usize, mode: Mode) {
+        *self.pending_mode.lock().await = Some((nth, mode));
+    }
     /// Swaps in `change` just before the `nth` request (counting from 1 since
     /// the last counter reset) is answered.
     pub async fn change_at_request(&self, nth: usize, change: Change) {
@@ -220,6 +234,7 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
         redirect_target: Mutex::new(None),
         if_range_requests: AtomicUsize::new(0),
         pending_change: Mutex::new(None),
+        pending_mode: Mutex::new(None),
     });
 
     let app = Router::new()
@@ -273,7 +288,29 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
         }
     }
 
+    {
+        let mut pending = state.pending_mode.lock().await;
+        if pending.as_ref().is_some_and(|(at, _)| nth >= *at) {
+            let (_, mode) = pending.take().unwrap();
+            *state.mode.lock().await = mode;
+        }
+    }
     let mode = *state.mode.lock().await;
+    if mode == Mode::Forbidden {
+        return Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(Body::from("forbidden"))
+            .unwrap();
+    }
+    if mode == Mode::LoginPage {
+        let page = "<!doctype html><title>Sign in</title><form>...</form>";
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/html; charset=utf-8")
+            .header("content-length", page.len().to_string())
+            .body(Body::from(page))
+            .unwrap();
+    }
     if mode == Mode::ServerError {
         return Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -368,7 +405,7 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
                 .body(body_for(&state, data).await)
                 .unwrap();
         }
-        Mode::Honest | Mode::ServerError => {}
+        Mode::Honest | Mode::ServerError | Mode::Forbidden | Mode::LoginPage => {}
     }
 
     builder = builder.header("accept-ranges", "bytes");
