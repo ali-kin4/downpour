@@ -2377,3 +2377,63 @@ async fn a_server_that_refuses_every_if_range_still_completes_in_one_stream() {
         expected
     );
 }
+
+/// Downloads from one origin share its connection ceiling.
+///
+/// The ceiling used to be enforced per download only, so five files at once,
+/// four connections each for a file this size, opened twenty connections to a
+/// host the engine promises never to open more than sixteen to. (The default
+/// settings do the same with three files of 64 MiB or more; smaller files keep
+/// this test light enough not to slow the rest of the suite.) The server
+/// counts its own concurrent responses, which is the number a rate-limiter or
+/// an abuse heuristic on the other end sees.
+#[tokio::test]
+async fn downloads_from_one_origin_share_its_connection_ceiling() {
+    // 8 MiB is the smallest size that gets four connections.
+    let data = payload(8 * 1024 * 1024);
+    let expected = sha256(&data);
+    let server = common::start(data).await;
+    // Slow enough that all five transfers are mid-flight together.
+    server.state.trickle(100);
+    let dir = TempDir::new();
+
+    let mut settings = Settings::default();
+    settings.max_concurrent_downloads = 5;
+    settings.max_connections_per_download = 16;
+    let engine = engine_with(settings);
+    let ids: Vec<_> = ["a.bin", "b.bin", "c.bin", "d.bin", "e.bin"]
+        .iter()
+        .map(|name| {
+            engine
+                .add(spec(&server.url("/file"), &dir.0, name, StartMode::Start))
+                .unwrap()
+        })
+        .collect();
+
+    let e = engine.clone();
+    let done = wait_for(Duration::from_secs(120), move || {
+        ids.iter()
+            .all(|id| e.get(id).map(|i| i.status) == Some(DownloadStatus::Completed))
+    })
+    .await;
+    assert!(done, "downloads did not complete: {:?}", engine.list());
+
+    for item in engine.list() {
+        assert_eq!(
+            sha256(&std::fs::read(item.target_path()).unwrap()),
+            expected,
+            "{} is corrupt",
+            item.filename
+        );
+    }
+    let peak = server.state.peak_in_flight();
+    assert!(
+        peak <= downpour_core::transfer::MAX_CONNECTIONS as usize,
+        "{peak} concurrent connections to one origin; the ceiling is {}",
+        downpour_core::transfer::MAX_CONNECTIONS
+    );
+    assert!(
+        peak > 8,
+        "peak {peak}: the downloads never overlapped, so the test proved nothing"
+    );
+}

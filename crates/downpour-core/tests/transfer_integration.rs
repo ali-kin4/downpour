@@ -24,6 +24,7 @@ fn ctx(control: Control, limiter: RateLimiter, progress: Arc<TransferProgress>) 
         control,
         limiter,
         progress,
+        budget: Default::default(),
     }
 }
 
@@ -1085,4 +1086,316 @@ async fn a_server_that_rejects_ranges_with_416_still_downloads_the_file() {
     .await
     .unwrap();
     assert_eq!(file_sha(&paths.final_path()), sha256(&data));
+}
+
+// ---------------------------------------------------------------------------
+// One connection budget per origin, shared by every download from it
+// ---------------------------------------------------------------------------
+
+use downpour_core::origin::ConnectionBudget;
+
+struct Running {
+    control: Control,
+    progress: Arc<TransferProgress>,
+    task: tokio::task::JoinHandle<downpour_core::Result<()>>,
+    _paths: Paths,
+}
+
+/// Probes `url`, then starts a transfer of it drawing on `budget`.
+async fn start_on(budget: &Arc<ConnectionBudget>, url: &str, connections: u8) -> Running {
+    start_limited(budget, url, connections, RateLimiter::unlimited()).await
+}
+
+async fn start_limited(
+    budget: &Arc<ConnectionBudget>,
+    url: &str,
+    connections: u8,
+    limiter: RateLimiter,
+) -> Running {
+    let mut c = ctx(Control::new(), limiter, Default::default());
+    c.budget = Arc::clone(budget);
+    let remote = transfer::probe(&c, url).await.unwrap();
+    start_probed(c, remote, connections)
+}
+
+fn start_probed(c: TransferContext, remote: RemoteInfo, connections: u8) -> Running {
+    let paths = Paths::new();
+    let control = c.control.clone();
+    let progress = Arc::clone(&c.progress);
+    let (fp, pp, mp) = (paths.final_path(), paths.part_path(), paths.meta_path());
+    let task = tokio::spawn(async move {
+        let config = TransferConfig {
+            connections,
+            ..Default::default()
+        };
+        transfer::run_transfer(&c, &remote, &fp, &pp, &mp, &config)
+            .await
+            .map(|_| ())
+    });
+    Running {
+        control,
+        progress,
+        task,
+        _paths: paths,
+    }
+}
+
+impl Running {
+    fn downloaded(&self) -> u64 {
+        self.progress.downloaded.load(Ordering::Relaxed)
+    }
+    fn final_sha(&self) -> String {
+        file_sha(&self._paths.final_path())
+    }
+}
+
+async fn finish(r: &mut Running, within: Duration) -> downpour_core::Result<()> {
+    tokio::time::timeout(within, &mut r.task)
+        .await
+        .expect("transfer did not settle in time")
+        .unwrap()
+}
+
+#[tokio::test]
+async fn one_download_can_use_the_whole_origin_budget() {
+    // The budget limits; it must not throttle a lone download below it.
+    let data = payload(8 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    server.state.trickle(40);
+    let budget = Arc::new(ConnectionBudget::new(4));
+
+    let mut a = start_on(&budget, &server.url("/file"), 4).await;
+    finish(&mut a, Duration::from_secs(60)).await.unwrap();
+
+    assert_eq!(a.final_sha(), sha256(&data));
+    assert_eq!(server.state.peak_in_flight(), 4);
+}
+
+#[tokio::test]
+async fn two_downloads_from_one_origin_share_its_budget_fairly() {
+    // Throttled on the client, not the server: a server sleeping between
+    // pieces only notices a connection the client gave up at its next write,
+    // and would count it in flight after it had already closed.
+    let data = payload(8 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    let budget = Arc::new(ConnectionBudget::new(4));
+    let rate = 2 * 1024 * 1024;
+
+    let mut a = start_limited(&budget, &server.url("/file"), 4, RateLimiter::new(rate)).await;
+    let started = {
+        let p = Arc::clone(&a.progress);
+        wait_for(Duration::from_secs(10), move || {
+            p.active_connections.load(Ordering::Relaxed) == 4
+        })
+        .await
+    };
+    assert!(started, "the first download never took the whole budget");
+    let mut b = start_limited(&budget, &server.url("/file"), 4, RateLimiter::new(rate)).await;
+
+    // Fairness, not just a cap: how far A had got when B received its first
+    // byte. Without it B queues until A's segments are done, which with
+    // work-stealing is A's very end.
+    let b_moving = {
+        let p = Arc::clone(&b.progress);
+        wait_for(Duration::from_secs(60), move || {
+            p.downloaded.load(Ordering::Relaxed) > 0
+        })
+        .await
+    };
+    assert!(b_moving, "B never started");
+    let a_when_b_started = a.downloaded();
+
+    finish(&mut a, Duration::from_secs(60)).await.unwrap();
+    finish(&mut b, Duration::from_secs(60)).await.unwrap();
+
+    assert_eq!(a.final_sha(), sha256(&data));
+    assert_eq!(b.final_sha(), sha256(&data));
+    assert!(
+        server.state.peak_in_flight() <= 4,
+        "{} in flight against a budget of 4",
+        server.state.peak_in_flight()
+    );
+    assert!(
+        a_when_b_started < data.len() as u64 / 2,
+        "A was {a_when_b_started} of {} bytes in before B got anything: B was starved",
+        data.len()
+    );
+}
+
+#[tokio::test]
+async fn downloads_from_different_origins_do_not_share_a_budget() {
+    let data = payload(4 * 1024 * 1024);
+    let one = common::start(data.clone()).await;
+    let two = common::start(data.clone()).await;
+    one.state.trickle(100);
+    two.state.trickle(100);
+    let budget = Arc::new(ConnectionBudget::new(2));
+
+    let mut a = start_on(&budget, &one.url("/file"), 2).await;
+    let mut b = start_on(&budget, &two.url("/file"), 2).await;
+    finish(&mut a, Duration::from_secs(30)).await.unwrap();
+    finish(&mut b, Duration::from_secs(30)).await.unwrap();
+
+    assert_eq!(one.state.peak_in_flight(), 2);
+    assert_eq!(
+        two.state.peak_in_flight(),
+        2,
+        "a full budget on one origin held back another"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_releases_the_budget_for_waiting_and_running_downloads() {
+    // One slot. A holds it, and as one download of two its even share is that
+    // one slot, so it never yields: B can do nothing but wait for it.
+    let data = payload(4 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    let budget = Arc::new(ConnectionBudget::new(1));
+
+    let mut cb = ctx(Control::new(), RateLimiter::unlimited(), Default::default());
+    cb.budget = Arc::clone(&budget);
+    let rb = transfer::probe(&cb, &server.url("/file")).await.unwrap();
+
+    server.state.trickle(2000);
+    let mut a = start_on(&budget, &server.url("/file"), 2).await;
+    let holding = {
+        let p = Arc::clone(&a.progress);
+        wait_for(Duration::from_secs(10), move || {
+            p.active_connections.load(Ordering::Relaxed) == 1
+        })
+        .await
+    };
+    assert!(holding);
+
+    let mut b = start_probed(cb, rb, 2);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(b.downloaded(), 0, "B was meant to be waiting for a slot");
+    b.control.cancel();
+    let r = finish(&mut b, Duration::from_secs(2)).await;
+    assert!(matches!(r, Err(downpour_core::Error::Cancelled)), "{r:?}");
+
+    // A is mid-body on a slow server; cancelling must hand its slot back.
+    a.control.cancel();
+    let r = finish(&mut a, Duration::from_secs(2)).await;
+    assert!(matches!(r, Err(downpour_core::Error::Cancelled)), "{r:?}");
+
+    server.state.trickle(0);
+    let mut c = start_on(&budget, &server.url("/file"), 2).await;
+    finish(&mut c, Duration::from_secs(10))
+        .await
+        .expect("a slot leaked: the budget never came back");
+    assert_eq!(c.final_sha(), sha256(&data));
+}
+
+#[tokio::test]
+async fn pausing_releases_the_budget() {
+    let data = payload(4 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    server.state.trickle(2000);
+    let budget = Arc::new(ConnectionBudget::new(2));
+
+    let mut a = start_on(&budget, &server.url("/file"), 2).await;
+    let full = {
+        let p = Arc::clone(&a.progress);
+        wait_for(Duration::from_secs(10), move || {
+            p.active_connections.load(Ordering::Relaxed) == 2
+        })
+        .await
+    };
+    assert!(full);
+    a.control.pause();
+    let r = finish(&mut a, Duration::from_secs(2)).await;
+    assert!(matches!(r, Err(downpour_core::Error::Paused)), "{r:?}");
+
+    server.state.trickle(0);
+    let mut b = start_on(&budget, &server.url("/file"), 2).await;
+    finish(&mut b, Duration::from_secs(10))
+        .await
+        .expect("a paused download kept its slots");
+    assert_eq!(b.final_sha(), sha256(&data));
+}
+
+#[tokio::test]
+async fn waiting_out_a_retry_does_not_hold_a_slot() {
+    // A is told to come back in thirty seconds. That wait must not keep B --
+    // same origin, one slot between them -- out for those thirty seconds.
+    let data = payload(256 * 1024);
+    let server = common::start(data.clone()).await;
+    let budget = Arc::new(ConnectionBudget::new(1));
+
+    let probe_ctx = |progress: Arc<TransferProgress>| {
+        let mut c = ctx(Control::new(), RateLimiter::unlimited(), progress);
+        c.budget = Arc::clone(&budget);
+        c
+    };
+    let ca = probe_ctx(Default::default());
+    let cb = probe_ctx(Default::default());
+    let ra = transfer::probe(&ca, &server.url("/file")).await.unwrap();
+    let rb = transfer::probe(&cb, &server.url("/file")).await.unwrap();
+
+    server.state.rate_limit(1, 30);
+    let mut a = start_probed(ca, ra, 1);
+    let limited = {
+        let s = Arc::clone(&server.state);
+        wait_for(Duration::from_secs(10), move || s.rate_limited_count() == 1).await
+    };
+    assert!(limited, "A never reached its Retry-After wait");
+
+    let mut b = start_probed(cb, rb, 1);
+    finish(&mut b, Duration::from_secs(10))
+        .await
+        .expect("B finished, but only after A's wait: A held the slot while sleeping");
+    assert_eq!(b.final_sha(), sha256(&data));
+
+    a.control.cancel();
+    let _ = finish(&mut a, Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn work_stealing_stays_inside_the_origin_budget() {
+    // Four workers, two slots: workers that finish steal and come back for a
+    // slot, and none of that may push the origin past two.
+    let data = payload(8 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    let budget = Arc::new(ConnectionBudget::new(2));
+
+    let mut a = start_on(&budget, &server.url("/file"), 4).await;
+    finish(&mut a, Duration::from_secs(60)).await.unwrap();
+
+    assert_eq!(a.final_sha(), sha256(&data));
+    assert!(
+        server.state.peak_in_flight() <= 2,
+        "{} in flight against a budget of 2",
+        server.state.peak_in_flight()
+    );
+}
+
+#[tokio::test]
+async fn an_idle_download_on_the_origin_does_not_set_off_a_yield_storm() {
+    // A third download from the same origin holds a lease but no connections
+    // -- sleeping out a Retry-After, or hashing its finished file. Counting it
+    // in the fair share left the two busy downloads permanently over a share
+    // they could never both fit inside, and they gave a connection back after
+    // every chunk: thousands of requests where a few dozen do.
+    let data = payload(8 * 1024 * 1024);
+    let server = common::start(data.clone()).await;
+    let budget = Arc::new(ConnectionBudget::new(6));
+    let _idle = budget.lease(&server.url("/file"));
+    let rate = 4 * 1024 * 1024;
+
+    let mut a = start_limited(&budget, &server.url("/file"), 4, RateLimiter::new(rate)).await;
+    let mut b = start_limited(&budget, &server.url("/file"), 4, RateLimiter::new(rate)).await;
+    finish(&mut a, Duration::from_secs(60)).await.unwrap();
+    finish(&mut b, Duration::from_secs(60)).await.unwrap();
+
+    assert_eq!(a.final_sha(), sha256(&data));
+    assert_eq!(b.final_sha(), sha256(&data));
+    assert!(server.state.peak_in_flight() <= 6);
+    // Two downloads of four segments: a handful of steals and yields each.
+    // A storm is in the thousands; two hundred is far from both.
+    let requests = server.state.ranged_count();
+    assert!(
+        requests < 200,
+        "{requests} ranged requests for two 8 MiB files: connections are being yielded and retaken in a loop"
+    );
 }

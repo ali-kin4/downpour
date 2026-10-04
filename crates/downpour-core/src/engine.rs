@@ -12,7 +12,7 @@ use crate::model::{
     DownloadId, DownloadItem, DownloadSpec, DownloadStatus, EngineEvent, RemoteInfo, StartMode,
 };
 use crate::naming;
-use crate::probe;
+use crate::origin::ConnectionBudget;
 use crate::resume::now_unix;
 use crate::scheduler::LocalMoment;
 use crate::settings::{ConflictPolicy, Settings};
@@ -115,6 +115,9 @@ struct Inner {
     /// reports "7 completed" and the shell happily sleeps the machine.
     completed_this_run: AtomicUsize,
     failed_this_run: AtomicUsize,
+    /// One connection budget for the engine's whole life, shared by every
+    /// transfer: the ceiling it enforces is per origin, across downloads.
+    budget: Arc<ConnectionBudget>,
 }
 
 /// Handle to the download engine. Cheap to clone; all clones share one queue.
@@ -172,6 +175,7 @@ impl Engine {
             was_busy: AtomicBool::new(false),
             completed_this_run: AtomicUsize::new(0),
             failed_this_run: AtomicUsize::new(0),
+            budget: Arc::new(ConnectionBudget::default()),
         });
 
         let engine = Engine { inner };
@@ -1095,6 +1099,7 @@ impl Engine {
                 control,
                 limiter,
                 progress,
+                budget: Arc::clone(&engine.inner.budget),
             };
             let outcome = engine.drive_transfer(&ctx, &item, &config, conflict).await;
             engine.finish_transfer(&id_owned, outcome).await;
@@ -1115,7 +1120,7 @@ impl Engine {
         config: &TransferConfig,
         conflict: ConflictPolicy,
     ) -> Result<PathBuf> {
-        let mut remote = probe::probe(&ctx.client, &item.url, &ctx.headers).await?;
+        let mut remote = transfer::probe(ctx, &item.url).await?;
 
         let parsed = url::Url::parse(&remote.final_url)
             .or_else(|_| url::Url::parse(&item.url))
@@ -1163,7 +1168,7 @@ impl Engine {
                 Err(Error::RemoteChanged { reason }) if restarts < MAX_CHANGE_RESTARTS => {
                     restarts += 1;
                     tracing::warn!(%reason, restarts, "remote file changed mid-download; starting over");
-                    remote = probe::probe(&ctx.client, &item.url, &ctx.headers).await?;
+                    remote = transfer::probe(ctx, &item.url).await?;
                     if restarts == MAX_CHANGE_RESTARTS {
                         remote.supports_range = false;
                     }

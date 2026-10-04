@@ -22,6 +22,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::{RemoteInfo, Segment};
+use crate::origin::{ConnectionBudget, Lease, Permit};
 use crate::probe;
 use crate::resume::{connections_for_size, plan_segments, Sidecar};
 use crate::throttle::RateLimiter;
@@ -43,7 +44,8 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 /// Below this, halving a segment costs more in request overhead than it saves.
 pub const DEFAULT_MIN_STEAL_BYTES: u64 = 1024 * 1024;
 
-/// Hard ceiling on connections to a single host.
+/// Hard ceiling on connections to a single origin, across every download from
+/// it -- enforced by [`ConnectionBudget`], not by any one transfer.
 ///
 /// Sixteen is where the evidence stops showing gains and starts showing
 /// rate-limiting. Beyond it a download manager is not fast, it is antisocial:
@@ -221,6 +223,9 @@ pub struct TransferContext {
     pub control: Control,
     pub limiter: RateLimiter,
     pub progress: Arc<TransferProgress>,
+    /// Shared by every transfer the engine runs, so downloads from one origin
+    /// draw on one ceiling. A budget made per transfer would bound nothing.
+    pub budget: Arc<ConnectionBudget>,
 }
 
 // ---------------------------------------------------------------------------
@@ -371,10 +376,13 @@ pub async fn run_transfer(
         .total
         .store(total.unwrap_or(0), Ordering::Relaxed);
 
+    // Keyed on the final URL: that is the server every request below goes to,
+    // whatever host the link started on.
+    let lease = Arc::new(ctx.budget.lease(&remote.final_url));
     let downloaded_total = if remote.supports_range && total.unwrap_or(0) > 0 {
-        segmented_transfer(ctx, remote, part_path, meta_path, config).await?
+        segmented_transfer(ctx, remote, &lease, part_path, meta_path, config).await?
     } else {
-        plain_transfer(ctx, remote, part_path, config).await?
+        plain_transfer(ctx, remote, &lease, part_path, config).await?
     };
 
     ctx.control.check()?;
@@ -441,6 +449,7 @@ pub async fn run_transfer(
 async fn segmented_transfer(
     ctx: &TransferContext,
     remote: &RemoteInfo,
+    lease: &Arc<Lease>,
     part_path: &Path,
     meta_path: &Path,
     config: &TransferConfig,
@@ -506,6 +515,8 @@ async fn segmented_transfer(
         let control = ctx.control.clone();
         let limiter = ctx.limiter.clone();
         let progress = Arc::clone(&ctx.progress);
+        let budget = Arc::clone(&ctx.budget);
+        let lease = Arc::clone(lease);
         let remote = remote.clone();
         let part_path = part_path.to_path_buf();
         let config = config.clone();
@@ -517,8 +528,12 @@ async fn segmented_transfer(
                 control,
                 limiter,
                 progress,
+                budget,
             };
-            worker_loop(worker_id, &ctx, &remote, &part_path, &table, &config).await
+            worker_loop(
+                worker_id, &ctx, &remote, &lease, &part_path, &table, &config,
+            )
+            .await
         });
     }
 
@@ -716,6 +731,7 @@ async fn worker_loop(
     worker_id: usize,
     ctx: &TransferContext,
     remote: &RemoteInfo,
+    lease: &Lease,
     part_path: &Path,
     table: &Arc<Mutex<SegmentTable>>,
     config: &TransferConfig,
@@ -740,19 +756,7 @@ async fn worker_loop(
             }
         };
 
-        let in_flight = ctx
-            .progress
-            .active_connections
-            .fetch_add(1, Ordering::Relaxed)
-            + 1;
-        ctx.progress
-            .peak_connections
-            .fetch_max(in_flight, Ordering::Relaxed);
-        let result = fetch_segment(ctx, remote, idx, table, &mut file, config).await;
-        ctx.progress
-            .active_connections
-            .fetch_sub(1, Ordering::Relaxed);
-
+        let result = fetch_segment(ctx, remote, lease, idx, table, &mut file, config).await;
         table.lock().release(idx);
         result?;
     }
@@ -763,6 +767,7 @@ async fn worker_loop(
 async fn fetch_segment(
     ctx: &TransferContext,
     remote: &RemoteInfo,
+    lease: &Lease,
     idx: usize,
     table: &Arc<Mutex<SegmentTable>>,
     file: &mut tokio::fs::File,
@@ -779,8 +784,28 @@ async fn fetch_segment(
             return Ok(());
         }
 
-        match stream_range(ctx, remote, idx, table, file, cursor, end).await {
-            Ok(()) => return Ok(()),
+        // A slot is held for this one request and no longer: everything below
+        // that sleeps does so after it has been given back.
+        let permit = acquire_unless_stopped(&ctx.control, lease).await?;
+        let in_flight = ctx
+            .progress
+            .active_connections
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        ctx.progress
+            .peak_connections
+            .fetch_max(in_flight, Ordering::Relaxed);
+        let outcome = stream_range(ctx, remote, lease, idx, table, file, cursor, end).await;
+        ctx.progress
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed);
+        drop(permit);
+
+        match outcome {
+            Ok(Streamed::Complete) => return Ok(()),
+            // Handed the connection to another download; queue for the next
+            // one. Not a failure, so it costs no retry.
+            Ok(Streamed::Yielded) => {}
             Err(Error::RateLimited { retry_after_secs }) => {
                 rate_limited += 1;
                 if rate_limited > MAX_RATE_LIMIT_RETRIES {
@@ -820,6 +845,36 @@ async fn fetch_segment(
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Probes `url` inside the origin's connection budget.
+///
+/// The probe is a request like any other, and the ceiling is a promise about
+/// connections to a server, not just about the segments that follow. It is
+/// keyed on the address asked for, since the final one is what it finds out.
+pub async fn probe(ctx: &TransferContext, url: &str) -> Result<RemoteInfo> {
+    let lease = ctx.budget.lease(url);
+    let _permit = acquire_unless_stopped(&ctx.control, &lease).await?;
+    probe::probe(&ctx.client, url, &ctx.headers).await
+}
+
+/// Waits for a connection slot on the origin, unless the transfer is told to
+/// stop first. A download queued behind others when the user pauses it must
+/// stop now, not when a slot frees up.
+async fn acquire_unless_stopped(control: &Control, lease: &Lease) -> Result<Permit> {
+    tokio::select! {
+        biased;
+        () = control.stopped() => Err(control.check().err().unwrap_or(Error::Cancelled)),
+        permit = lease.acquire() => Ok(permit),
+    }
+}
+
+/// How a ranged request ended without an error.
+enum Streamed {
+    /// The segment is done, or what remains of it was stolen.
+    Complete,
+    /// Stopped early to give the connection to another download.
+    Yielded,
 }
 
 /// Sleeps out a retry delay, unless the transfer is told to stop first.
@@ -878,15 +933,17 @@ fn observed(h: &HeaderMap, size: Option<u64>) -> RemoteInfo {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream_range(
     ctx: &TransferContext,
     remote: &RemoteInfo,
+    lease: &Lease,
     idx: usize,
     table: &Arc<Mutex<SegmentTable>>,
     file: &mut tokio::fs::File,
     start: u64,
     end: u64,
-) -> Result<()> {
+) -> Result<Streamed> {
     let url = remote.final_url.as_str();
     let mut headers = probe::headers_for(&ctx.headers, remote);
     let range = format!("bytes={start}-{end}");
@@ -1026,6 +1083,13 @@ async fn stream_range(
             // belongs to another worker.
             break;
         }
+
+        // Another download is queued for this origin and this one holds more
+        // than its share. Every byte so far is written and counted, so the
+        // segment simply carries on from its cursor when a slot comes back.
+        if cursor <= table.lock().bounds(idx).1 && lease.should_yield() {
+            return Ok(Streamed::Yielded);
+        }
     }
 
     file.flush().await.map_err(Error::PlainIo)?;
@@ -1039,7 +1103,7 @@ async fn stream_range(
             format!("stream ended at byte {cursor}, expected through {current_end}"),
         )));
     }
-    Ok(())
+    Ok(Streamed::Complete)
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,9 +1116,13 @@ async fn stream_range(
 async fn plain_transfer(
     ctx: &TransferContext,
     remote: &RemoteInfo,
+    lease: &Lease,
     part_path: &Path,
     _config: &TransferConfig,
 ) -> Result<u64> {
+    // One connection for the whole body, and it is never yielded: a single
+    // stream cannot resume, so giving the slot back would mean starting over.
+    let _permit = acquire_unless_stopped(&ctx.control, lease).await?;
     ctx.progress.downloaded.store(0, Ordering::Relaxed);
     ctx.progress.active_connections.store(1, Ordering::Relaxed);
     ctx.progress

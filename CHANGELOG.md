@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Downloads from the same server now share its connection limit.** The
+  limit of sixteen connections to one server was enforced per download, so
+  three files from one host at the default eight connections each opened
+  twenty-four -- the kind of burst that gets a user rate-limited or banned.
+  Every download from a server (same scheme, host and port) now draws on one
+  shared budget, including the size check before it starts. A download holding
+  more than its share hands connections back when another is waiting, so one
+  large file no longer holds the server until it finishes. A download waiting
+  to retry, paused, or cancelled holds no connections at all.
 - **A file that changes on the server is never stitched together from two
   versions.** Resume used to accept a partial file whenever nothing on the
   server contradicted it, so a server that stopped sending an ETag, or never

@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, Response, StatusCode};
 use axum::routing::get;
@@ -37,7 +37,9 @@ pub enum Mode {
 }
 
 pub struct ServerState {
-    pub data: Mutex<Vec<u8>>,
+    /// `Bytes` so every response is a cheap slice of one buffer: several
+    /// concurrent downloads of a large file must not each copy all of it.
+    pub data: Mutex<Bytes>,
     pub etag: Mutex<Option<String>>,
     pub last_modified: Mutex<Option<String>>,
     pub mode: Mutex<Mode>,
@@ -57,6 +59,11 @@ pub struct ServerState {
     /// thing a local server otherwise cannot: a worker parked waiting on the
     /// network, which is where a download spends nearly all of its life.
     pub chunk_delay_ms: AtomicUsize,
+    /// Response bodies being sent right now, and the most there ever were at
+    /// once. One server is one origin, so the peak is exactly what a
+    /// per-origin connection limit promises to bound.
+    pub in_flight: AtomicUsize,
+    pub peak_in_flight: AtomicUsize,
     /// Whether `If-Range` is honoured. A real server answers a stale `If-Range`
     /// with `200` and the whole new file; switching this off reproduces the
     /// servers that ignore it and serve a `206` of whatever they hold now, so
@@ -125,6 +132,9 @@ impl ServerState {
     pub async fn redirect_to(&self, url: &str) {
         *self.redirect_target.lock().await = Some(url.to_string());
     }
+    pub fn peak_in_flight(&self) -> usize {
+        self.peak_in_flight.load(Ordering::SeqCst)
+    }
     pub fn if_range_count(&self) -> usize {
         self.if_range_requests.load(Ordering::SeqCst)
     }
@@ -146,7 +156,7 @@ impl ServerState {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) {
-        *self.data.lock().await = data;
+        *self.data.lock().await = Bytes::from(data);
         *self.etag.lock().await = etag.map(|s| s.to_string());
         *self.last_modified.lock().await = last_modified.map(|s| s.to_string());
     }
@@ -160,7 +170,7 @@ impl ServerState {
     }
     /// Replaces the file contents and its ETag, simulating an upstream change.
     pub async fn replace_data(&self, data: Vec<u8>, etag: Option<&str>) {
-        *self.data.lock().await = data;
+        *self.data.lock().await = Bytes::from(data);
         *self.etag.lock().await = etag.map(|s| s.to_string());
     }
     /// Makes the next `times` responses cut off after `bytes` bytes.
@@ -188,7 +198,7 @@ pub async fn start(data: Vec<u8>) -> TestServer {
 
 pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestServer {
     let state = Arc::new(ServerState {
-        data: Mutex::new(data),
+        data: Mutex::new(Bytes::from(data)),
         etag: Mutex::new(etag.map(|s| s.to_string())),
         last_modified: Mutex::new(Some("Wed, 21 Oct 2026 07:28:00 GMT".to_string())),
         mode: Mutex::new(mode),
@@ -199,6 +209,8 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
         ranged_requests: AtomicUsize::new(0),
         bytes_served: AtomicUsize::new(0),
         chunk_delay_ms: AtomicUsize::new(0),
+        in_flight: AtomicUsize::new(0),
+        peak_in_flight: AtomicUsize::new(0),
         honour_if_range: AtomicBool::new(true),
         refuse_every_if_range: AtomicBool::new(false),
         credentialed_requests: AtomicUsize::new(0),
@@ -255,7 +267,7 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
         let mut pending = state.pending_change.lock().await;
         if pending.as_ref().is_some_and(|(at, _)| nth >= *at) {
             let (_, change) = pending.take().unwrap();
-            *state.data.lock().await = change.data;
+            *state.data.lock().await = Bytes::from(change.data);
             *state.etag.lock().await = change.etag;
             *state.last_modified.lock().await = change.last_modified;
         }
@@ -318,17 +330,12 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
 
     match mode {
         Mode::UnknownLength => {
-            // Streamed in chunks so hyper uses chunked transfer encoding and
-            // emits no Content-Length. Handing hyper a complete buffer would
-            // let it compute the length and this case would never be tested.
-            state.bytes_served.fetch_add(data.len(), Ordering::SeqCst);
-            let chunks: Vec<Result<axum::body::Bytes, std::io::Error>> = data
-                .chunks(64 * 1024)
-                .map(|c| Ok(axum::body::Bytes::copy_from_slice(c)))
-                .collect();
+            // Streamed in pieces with no Content-Length header, so hyper uses
+            // chunked transfer encoding. Through `body_for` like every other
+            // body, so it is counted in flight too.
             return builder
                 .status(StatusCode::OK)
-                .body(Body::from_stream(futures::stream::iter(chunks)))
+                .body(body_for(&state, data).await)
                 .unwrap();
         }
         Mode::NoRanges => {
@@ -408,7 +415,7 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
             .unwrap();
     };
 
-    let slice = data[start..=end].to_vec();
+    let slice = data.slice(start..=end);
     builder
         .status(StatusCode::PARTIAL_CONTENT)
         .header("content-range", format!("bytes {start}-{end}/{total}"))
@@ -417,48 +424,88 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
         .unwrap()
 }
 
-/// Wraps the payload, honouring a pending "drop the connection" instruction.
-async fn body_for(state: &Arc<ServerState>, payload: Vec<u8>) -> Body {
+/// Counts one response body as in flight for as long as it lives.
+struct InFlight(Arc<ServerState>);
+
+impl InFlight {
+    fn enter(state: &Arc<ServerState>) -> Self {
+        let now = state.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        state.peak_in_flight.fetch_max(now, Ordering::SeqCst);
+        InFlight(Arc::clone(state))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Wraps the payload, honouring a pending "drop the connection" instruction,
+/// and counts it in flight until its last piece is handed over.
+async fn body_for(state: &Arc<ServerState>, payload: Bytes) -> Body {
     state
         .bytes_served
         .fetch_add(payload.len(), Ordering::SeqCst);
     let delay = state.chunk_delay_ms.load(Ordering::SeqCst);
-    if delay > 0 {
+
+    let pieces: Vec<Result<Bytes, std::io::Error>> = if delay > 0 {
         // Eight pieces with a wait before each: long enough that a client which
         // only notices a pause between chunks is plainly distinguishable from
         // one that can be woken mid-wait.
         let piece = payload.len().div_ceil(8).max(1);
-        let pieces: Vec<Vec<u8>> = payload.chunks(piece).map(|c| c.to_vec()).collect();
-        let stream = futures::stream::unfold(pieces.into_iter(), move |mut it| async move {
-            let next = it.next()?;
-            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-            Some((Ok::<_, std::io::Error>(axum::body::Bytes::from(next)), it))
-        });
-        return Body::from_stream(stream);
-    }
-
-    let truncate_at = *state.truncate_after.lock().await;
-    let remaining = state.truncate_times.load(Ordering::SeqCst);
-
-    let Some(cut) = truncate_at else {
-        return Body::from(payload);
+        (0..payload.len().max(1))
+            .step_by(piece)
+            .map(|i| Ok(payload.slice(i.min(payload.len())..(i + piece).min(payload.len()))))
+            .collect()
+    } else {
+        let truncate_at = *state.truncate_after.lock().await;
+        let remaining = state.truncate_times.load(Ordering::SeqCst);
+        match truncate_at {
+            Some(cut) if remaining > 0 && payload.len() > cut => {
+                state.truncate_times.fetch_sub(1, Ordering::SeqCst);
+                // Send a prefix, then abort the body with an error. The client
+                // sees a connection that died mid-transfer, which is exactly
+                // what a flaky link looks like.
+                vec![
+                    Ok(payload.slice(..cut)),
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "simulated connection drop",
+                    )),
+                ]
+            }
+            // Pieces, not one buffer: handed over whole, a body would leave
+            // the in-flight count the instant it started, and the count would
+            // measure nothing. In pieces, backpressure from a client still
+            // reading keeps it counted for as long as it is really in flight.
+            _ => (0..payload.len().max(1))
+                .step_by(64 * 1024)
+                .map(
+                    |i| Ok(payload.slice(i.min(payload.len())..(i + 64 * 1024).min(payload.len()))),
+                )
+                .collect(),
+        }
     };
-    if remaining == 0 || payload.len() <= cut {
-        return Body::from(payload);
-    }
-    state.truncate_times.fetch_sub(1, Ordering::SeqCst);
 
-    // Send a prefix, then abort the body with an error. The client sees a
-    // connection that died mid-transfer, which is exactly what a flaky link
-    // looks like.
-    let prefix = payload[..cut].to_vec();
-    let stream = futures::stream::iter(vec![
-        Ok::<_, std::io::Error>(axum::body::Bytes::from(prefix)),
-        Err(std::io::Error::new(
-            std::io::ErrorKind::ConnectionReset,
-            "simulated connection drop",
-        )),
-    ]);
+    // The count ends as the last piece is handed over -- before the client can
+    // have read it -- so a client that finishes and immediately opens its next
+    // request is never counted twice. A body dropped early (the client went
+    // away) ends the count on drop.
+    let guard = InFlight::enter(state);
+    let stream = futures::stream::unfold(
+        (pieces.into_iter(), Some(guard)),
+        move |(mut it, mut guard)| async move {
+            let next = it.next()?;
+            if delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+            }
+            if it.len() == 0 {
+                guard.take();
+            }
+            Some((next, (it, guard)))
+        },
+    );
     Body::from_stream(stream)
 }
 

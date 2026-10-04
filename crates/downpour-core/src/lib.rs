@@ -22,6 +22,7 @@
 pub mod error;
 pub mod model;
 pub mod naming;
+pub mod origin;
 pub mod probe;
 pub mod resume;
 pub mod scheduler;
