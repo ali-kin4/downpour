@@ -890,6 +890,85 @@ function baseNameOf(path) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Request methods — which downloads Downpour cannot fetch again
+ * ------------------------------------------------------------------ */
+
+/**
+ * The method of every recent page navigation, so a download that came out of
+ * a form POST can be recognised and left with the browser.
+ *
+ * WHY THIS EXISTS. The hand-off sends a URL, and the app fetches it with GET.
+ * For a download produced by submitting a form — a report export, a "generate
+ * PDF" button, a bank statement — the same URL fetched with GET returns an
+ * error page, the form again, or nothing at all. And the hand-off only cancels
+ * Chrome's copy after the app accepts, which it always does, so the user lost
+ * the one correct copy in exchange for a wrong one. chrome.downloads does not
+ * say what method produced a download; webRequest does, so it is observed
+ * here and looked up at capture time.
+ *
+ * Only main_frame and sub_frame are watched: a form submission is always a
+ * navigation, and watching every subresource would mean a storage write per
+ * image. Redirects re-enter onBeforeRequest for each hop with the method that
+ * hop used, so a POST answered with a 303 records its GET target as GET, and
+ * that download is still captured.
+ *
+ * Kept in chrome.storage.session, not module scope: the worker can be killed
+ * between the navigation and onDeterminingFilename, and the answer must
+ * survive it. Writes are chained so two quick navigations cannot interleave a
+ * read-modify-write and drop one of them.
+ */
+const NAV_METHODS_KEY = 'navMethods';
+const NAV_METHODS_MAX = 50;
+// Longer than any sane gap between a request leaving and Chrome deciding the
+// response is a download; short enough that the list stays small.
+const NAV_METHODS_TTL_MS = 120000;
+
+let navMethodsWrite = Promise.resolve();
+
+function freshNavMethods(list, now) {
+  return (Array.isArray(list) ? list : []).filter((e) => e && now - e.at <= NAV_METHODS_TTL_MS);
+}
+
+function noteNavigationMethod(details) {
+  if (!isHttpUrl(details.url)) return;
+  const entry = { url: details.url, method: String(details.method || 'GET').toUpperCase(), at: Date.now() };
+  navMethodsWrite = navMethodsWrite
+    .then(async () => {
+      const data = await getSession(NAV_METHODS_KEY);
+      const list = freshNavMethods(data[NAV_METHODS_KEY], entry.at).filter((e) => e.url !== entry.url);
+      list.push(entry);
+      await setSession({ [NAV_METHODS_KEY]: list.slice(-NAV_METHODS_MAX) });
+    })
+    .catch((err) => console.warn('[Downpour] could not record a navigation method', err));
+}
+
+/**
+ * The method the browser used for this download, or '' when it was never
+ * observed (a link with `download`, a script-started download, a navigation
+ * from before the extension loaded) — which is the same situation as before
+ * this lookup existed, and is captured as it always was.
+ *
+ * When the final URL was not seen but the original was, the original decides.
+ * A POST whose redirect we missed is still a POST as far as we know, and
+ * guessing GET is the guess that costs the user their file.
+ */
+async function downloadMethod(item) {
+  await navMethodsWrite;
+  const data = await getSession(NAV_METHODS_KEY);
+  const list = freshNavMethods(data[NAV_METHODS_KEY], Date.now());
+  const find = (url) => (url ? list.find((e) => e.url === url) : undefined);
+  const hit = find(item.finalUrl) || find(item.url);
+  return hit ? hit.method : '';
+}
+
+if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
+  chrome.webRequest.onBeforeRequest.addListener(noteNavigationMethod, {
+    urls: ['http://*/*', 'https://*/*'],
+    types: ['main_frame', 'sub_frame']
+  });
+}
+
+/* ------------------------------------------------------------------ *
  * chrome.downloads.onDeterminingFilename — the capture entry point
  * ------------------------------------------------------------------ */
 
@@ -916,6 +995,14 @@ async function maybeCapture(item) {
   // should work even when the app is unreachable.
   if (await bypassRequested(item, prefs)) {
     console.debug('[Downpour] bypass modifier held — letting the browser download', item.finalUrl || item.url);
+    return;
+  }
+
+  // Also before any network traffic: no rule and no app answer can make a
+  // GET of this URL return what the form returned. See downloadMethod.
+  const method = await downloadMethod(item);
+  if (method && method !== 'GET') {
+    console.info('[Downpour] ' + method + ' download — leaving it with the browser', item.finalUrl || item.url);
     return;
   }
 

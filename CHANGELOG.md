@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A server that refuses ranges partway through no longer fails the
   download.** If ranged requests stop being honoured after the probe, the
   download continues as a single stream instead of failing.
+- **Downloads produced by submitting a form now stay in the browser.** A
+  report export, a "generate PDF" button or a bank statement is the answer to
+  a POST, and Downpour can only fetch a link with GET -- which returns an error
+  page or the form again. The extension handed these over anyway and then
+  cancelled the browser's copy, so the one correct file was replaced by a wrong
+  one. It now watches the method each page navigation used (the new
+  `webRequest` permission, observation only) and leaves anything that was not
+  a GET to the browser. A form that redirects to an ordinary download link is
+  still captured.
 
 ## [1.5.3] - 2026-09-18
 
