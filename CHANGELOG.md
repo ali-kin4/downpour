@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Refresh download address.** A paused or failed download can be given a
+  new link without losing what it has already downloaded: choose *Refresh
+  download address…* and either start the download again in your browser
+  (Downpour waits ten minutes and takes the matching download as the new
+  link) or paste a new address. The bytes already on disk are kept only when
+  the server confirms it is the same file; otherwise the download starts
+  over in the same row. A browser download is only ever attached when it
+  clearly matches -- same site or page, same name and size.
+- **Video links that expire are renewed automatically.** A video download
+  remembers the page and format it came from; when its link expires, Downpour
+  asks the page for a fresh one and carries on, up to three times.
+
 ### Fixed
 
 - **An expired download link no longer turns into a "finished" web page.**

@@ -48,6 +48,9 @@ function item(over: Partial<DownloadItem> & { id: string; filename: string }): D
     startedAt: now - 60,
     completedAt: now,
     elapsedMs: 60_000,
+    awaitingAddressUntil: null,
+    addressExpired: false,
+    media: null,
     ...over,
   };
 }
@@ -112,7 +115,24 @@ const items: DownloadItem[] = [
     sequence: 1,
   }),
   item({ id: "7", filename: "wallpaper-4k.png", sequence: 0, totalBytes: 8_400_000, downloadedBytes: 8_400_000 }),
+  // A link that expired part-way, so "Refresh download address" is reachable.
+  item({
+    id: "8",
+    filename: "Lecture 07 - Signals.mp4",
+    url: "https://cdn.example.com/v/lecture-07.mp4?expires=1759500000&sig=3f9a",
+    status: "paused",
+    addressExpired: true,
+    error: "the download address has expired (the server answered 403)",
+    totalBytes: 1_210_000_000,
+    downloadedBytes: 486_000_000,
+    sequence: -1,
+  }),
 ];
+
+/** Rejects the way a Tauri command does: with the error as a plain string. */
+const fail = (message: string) => Promise.reject(message);
+
+const byId = (id: unknown) => items.find((i) => i.id === id);
 
 const settings: Settings = {
   downloadDir: "C:\\Users\\You\\Downloads\\Downpour",
@@ -171,6 +191,40 @@ let current = { ...settings };
 const handlers: Record<string, Handler> = {
   list_downloads: () => items,
   get_download: ({ id }) => items.find((i) => i.id === id) ?? null,
+  // The real wait ends when the extension's capture matches; here it only
+  // ever lapses or is cancelled, which is enough to review both screens.
+  refresh_address_wait: ({ id }) => {
+    const it = byId(id);
+    if (!it) return fail(`no such download: ${id}`);
+    if (it.status === "running" || it.status === "probing") {
+      return fail("pause the download before giving it a new address");
+    }
+    it.awaitingAddressUntil = Math.floor(Date.now() / 1000) + 600;
+    return null;
+  },
+  refresh_address_cancel: ({ id }) => {
+    const it = byId(id);
+    if (it) it.awaitingAddressUntil = null;
+    return null;
+  },
+  refresh_address_set: ({ id, url }) => {
+    const it = byId(id);
+    if (!it) return fail(`no such download: ${id}`);
+    const next = String(url ?? "").trim();
+    if (!/^https?:\/\//i.test(next)) return fail(`invalid URL: ${next}`);
+    if (it.status === "running" || it.status === "probing") {
+      return fail("pause the download before giving it a new address");
+    }
+    Object.assign(it, {
+      url: next,
+      finalUrl: null,
+      error: null,
+      awaitingAddressUntil: null,
+      addressExpired: false,
+      status: "queued",
+    });
+    return null;
+  },
   get_settings: () => current,
   update_settings: (a) => {
     current = { ...(a.settings as Settings) };

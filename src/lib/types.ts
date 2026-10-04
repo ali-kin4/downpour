@@ -58,6 +58,69 @@ export interface DownloadItem {
   completedAt: number | null;
   /** Milliseconds spent transferring. */
   elapsedMs: number;
+  /**
+   * Unix seconds until which this download waits for the user to start it
+   * again in the browser, so that capture becomes its new address; `null` when
+   * it is not waiting. The engine does not clear it when the wait lapses, so a
+   * past value means "no longer waiting" -- compare it with the clock.
+   */
+  awaitingAddressUntil: number | null;
+  /**
+   * The download stopped because its address expired; cleared when it gets a
+   * new one. Not persisted by the engine, so it describes this session only.
+   */
+  addressExpired: boolean;
+  /** Where a media download's address was resolved from, or `null`. */
+  media: MediaSource | null;
+}
+
+/**
+ * A media file's direct address is signed and short-lived; the page and the
+ * format chosen there are not, which is what lets the app resolve a fresh
+ * address itself when one expires.
+ */
+export interface MediaSource {
+  pageUrl: string;
+  formatId: string;
+}
+
+/**
+ * The engine's wording when it parks a download whose link stopped working.
+ * Matched on the prefix because the rest names the server's answer.
+ */
+const EXPIRED_ADDRESS_PREFIX = "the download address has expired";
+
+/**
+ * Whether the download stopped because its link expired.
+ *
+ * The flag is the signal. The error text is the fallback, because the flag is
+ * not persisted: after a restart a download parked for exactly this reason
+ * still says so in its error, and should still offer the way out.
+ */
+export function linkExpired(item: DownloadItem): boolean {
+  return (
+    item.addressExpired ||
+    (item.error?.toLowerCase().startsWith(EXPIRED_ADDRESS_PREFIX) ?? false)
+  );
+}
+
+/**
+ * Whether a download can be given a new address. Anything not moving and not
+ * finished: the engine refuses one in flight, and a completed file has nothing
+ * left to fetch.
+ */
+export function canRefreshAddress(status: DownloadStatus): boolean {
+  return (
+    status === "paused" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "idle"
+  );
+}
+
+/** Whether the item is waiting for a new address at `nowSecs`. */
+export function awaitingAddress(item: DownloadItem, nowSecs: number): boolean {
+  return item.awaitingAddressUntil !== null && item.awaitingAddressUntil > nowSecs;
 }
 
 export interface RemoteInfo {

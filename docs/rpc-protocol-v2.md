@@ -262,14 +262,15 @@ is decided afterwards by the resume rules (§6.1), never by the match score.
 
 ## 7. Storage
 
-Migration to store schema 3 adds a `download_origin` table, one row per item:
-`kind` (`browser_capture`, `media_page`, `manual`), `page_url`, `media_format_id`,
-`extractor`, `original_url`, `redirect_chain`, `provenance` (JSON),
-`captured_at`, `awaiting_address_until`, and the credentials-bearing context,
-encrypted (D12). Rows for v1 captures are synthesised with provenance
-`reconstructed`.
+Schema 3 (implemented) adds `media_page_url` and `media_format_id` to the
+`downloads` table, added in place like `removed_at`, so a media download can
+be resolved again after a restart. The wait for a new address and the
+"address expired" flag are deliberately not stored: neither should outlive
+the app.
 
----
+Still to come with capture fidelity (§4): the request context's provenance
+and redirect chain, and the credentials in it encrypted at rest (D12) --
+today's `headers` column holds a captured `Cookie` in plaintext.
 
 ## 8. Compatibility
 
@@ -284,9 +285,11 @@ encrypted (D12). Rows for v1 captures are synthesised with provenance
 
 ## 9. Implementation order
 
-1. **Refresh address** (§6), over the transports that exist: engine
-   `refresh_address` and the `address_expired` reason with tests on the
-   misbehaving server; the app-side matcher; media re-resolution; the UI action.
+1. **Refresh address** (§6), over the transports that exist -- **done**:
+   engine `refresh_address` and `AddressExpired`, the app-side matcher
+   (`downpour_core::refresh`), media re-resolution, the UI action. Media
+   identity is captured without a protocol change: the app remembers what
+   `resolve_media` returned and attaches it to the add that follows.
 2. **Capture fidelity** (§4): `webRequest` observation keyed by `requestId`
    across redirects, provenance, header policy; `POST /api/v2/message` and
    `hello`/`welcome`.

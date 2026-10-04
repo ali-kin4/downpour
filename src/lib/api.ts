@@ -88,6 +88,28 @@ export const setScheduled = (id: DownloadId, scheduled: boolean) =>
 export const moveToTop = (id: DownloadId) => call<void>("move_to_top", { id });
 export const moveToBottom = (id: DownloadId) => call<void>("move_to_bottom", { id });
 
+// -- Refreshing an expired address -------------------------------------------
+//
+// None of these come back through the event stream with the item: the engine
+// announces a plain status change, which carries neither the address nor the
+// wait. Callers re-read the item afterwards (`useApp().reloadItem`).
+
+/**
+ * Waits ten minutes for the user to start the same download again in their
+ * browser; the extension's capture then becomes this download's address and
+ * it starts. Rejects while the download is running.
+ */
+export const waitForNewAddress = (id: DownloadId) =>
+  call<void>("refresh_address_wait", { id });
+export const cancelNewAddress = (id: DownloadId) =>
+  call<void>("refresh_address_cancel", { id });
+/**
+ * Gives the download an address the user pasted, keeping its request context,
+ * and starts it. Rejects a non-http(s) URL or a running download.
+ */
+export const setDownloadAddress = (id: DownloadId, url: string) =>
+  call<void>("refresh_address_set", { id, url });
+
 // -- Bulk -------------------------------------------------------------------
 
 export const pauseAll = () => call<void>("pause_all");

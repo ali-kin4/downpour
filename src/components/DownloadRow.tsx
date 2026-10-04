@@ -15,6 +15,8 @@ import {
   Clock,
   Copy,
   Folder,
+  Hourglass,
+  Link2,
   MoreHorizontal,
   Pause,
   Play,
@@ -26,6 +28,7 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { useNow } from "../hooks/useNow";
 import * as api from "../lib/api";
 import { FileTile } from "../lib/filetypes";
 import {
@@ -37,7 +40,13 @@ import {
   hostOf,
 } from "../lib/format";
 import type { DownloadItem, DownloadStatus } from "../lib/types";
-import { canPause, canStart } from "../lib/types";
+import {
+  awaitingAddress,
+  canPause,
+  canRefreshAddress,
+  canStart,
+  linkExpired,
+} from "../lib/types";
 import { useApp, useItem } from "../store/app";
 import {
   COLUMN_GAP,
@@ -54,6 +63,7 @@ export function DownloadRow({ id }: { id: string }) {
   const selected = useApp((s) => s.selection.has(id));
   const select = useApp((s) => s.select);
   const run = useApp((s) => s.run);
+  const openRefresh = useApp((s) => s.setRefreshAddressId);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
 
   if (!item) return null;
@@ -232,6 +242,13 @@ export function DownloadRow({ id }: { id: string }) {
               <Pause size={14} />
             </IconAction>
           )}
+          {/* An expired link is the one stop where Start cannot help, so the
+              way out sits beside it rather than only in the menu. */}
+          {linkExpired(item) && canRefreshAddress(item.status) && (
+            <IconAction label="Refresh download address" onClick={() => openRefresh(id)}>
+              <Link2 size={14} />
+            </IconAction>
+          )}
           {item.status === "completed" && (
             <IconAction
               label="Show in folder"
@@ -379,6 +396,30 @@ function StatusPill({ item }: { item: DownloadItem }) {
   // the presence of an error rather than by the status, and so would have
   // called every one of these a failure.
   const label = item.status === "paused" && item.error ? "Interrupted" : meta.label;
+
+  // Two states the status alone does not name. A download waiting for its new
+  // address looks paused to the engine, but the user has asked for something
+  // and is owed a sign it is being listened for; it ticks only while waiting.
+  // An expired link is said as such, because "Interrupted" suggests trying
+  // again, which is the one thing that cannot work. When it came from a media
+  // page the app is already resolving a new one, and says that instead.
+  const until = item.awaitingAddressUntil;
+  const now = useNow(until !== null && until > Date.now() / 1000);
+  if (awaitingAddress(item, now)) {
+    return (
+      <div
+        className="flex items-center gap-1 truncate text-[11px] font-medium text-[var(--status-scheduled)]"
+        title="Start the download again in your browser and Downpour will use it"
+      >
+        <Hourglass size={11} />
+        <span className="truncate">Waiting for new address</span>
+      </div>
+    );
+  }
+  const expired = linkExpired(item) && canRefreshAddress(item.status);
+  const expiredLabel =
+    item.addressExpired && item.media ? "Fetching new address" : "Link expired";
+
   return (
     <div
       className="flex items-center gap-1 truncate text-[11px] font-medium"
@@ -387,8 +428,8 @@ function StatusPill({ item }: { item: DownloadItem }) {
       // carries the detail rather than wrapping the row to three lines.
       title={item.error ?? meta.label}
     >
-      {meta.icon}
-      <span className="truncate">{label}</span>
+      {expired ? <Link2 size={11} /> : meta.icon}
+      <span className="truncate">{expired ? expiredLabel : label}</span>
     </div>
   );
 }
@@ -408,6 +449,7 @@ function RowMenu({
 }) {
   const run = useApp((s) => s.run);
   const toast = useApp((s) => s.toast);
+  const openRefresh = useApp((s) => s.setRefreshAddressId);
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState(at);
   // The flip below needs the menu's own size, so it can only run after a first
@@ -493,6 +535,17 @@ function RowMenu({
           onClick={go("Could not retry", () => api.startDownload(item.id))}
         >
           Retry
+        </Entry>
+      )}
+      {canRefreshAddress(item.status) && (
+        <Entry
+          icon={<Link2 size={14} />}
+          onClick={() => {
+            openRefresh(item.id);
+            onClose();
+          }}
+        >
+          Refresh download address…
         </Entry>
       )}
 

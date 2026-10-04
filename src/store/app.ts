@@ -81,11 +81,15 @@ interface AppState {
   /** Set when About was opened *to* check for updates, so it checks at once. */
   aboutCheckOnOpen: boolean;
   paletteOpen: boolean;
+  /** The download whose "Refresh download address" dialog is open, if any. */
+  refreshAddressId: DownloadId | null;
   toasts: Toast[];
 
   // --- actions ---
   bootstrap: () => Promise<void>;
   applyEvent: (event: EngineEvent) => void;
+  /** Re-reads one item, for changes the event stream does not carry. */
+  reloadItem: (id: DownloadId) => Promise<void>;
   refreshStats: () => Promise<void>;
   refreshSettings: () => Promise<void>;
   saveSettings: (next: Settings) => Promise<void>;
@@ -107,6 +111,7 @@ interface AppState {
   openAboutForUpdates: () => void;
   clearAboutCheckOnOpen: () => void;
   setPaletteOpen: (v: boolean) => void;
+  setRefreshAddressId: (id: DownloadId | null) => void;
   dismissFinished: () => void;
 
   toast: (t: Omit<Toast, "id">) => void;
@@ -148,6 +153,7 @@ export const useApp = create<AppState>((set, get) => ({
   whatsNewOpen: false,
   aboutCheckOnOpen: false,
   paletteOpen: false,
+  refreshAddressId: null,
   toasts: [],
 
   async bootstrap() {
@@ -188,6 +194,10 @@ export const useApp = create<AppState>((set, get) => ({
             [event.id]: { ...current, status: event.status, error: event.error },
           },
         });
+        // A status change on a download waiting for a new address is how the
+        // browser's capture arriving shows up here -- but the event carries
+        // neither the new address nor the cleared wait, so read the item.
+        if (current.awaitingAddressUntil !== null) void get().reloadItem(event.id);
         break;
       }
       case "progress": {
@@ -297,6 +307,18 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
+  async reloadItem(id) {
+    try {
+      const fresh = await api.getDownload(id);
+      // Only patch what is still there: a removal can land while this is in
+      // flight, and resurrecting the row would be worse than a stale field.
+      if (!fresh || !get().items[id]) return;
+      set({ items: { ...get().items, [id]: fresh } });
+    } catch {
+      // The next event or resync corrects it; nothing here is worth an error.
+    }
+  },
+
   async refreshStats() {
     try {
       set({ stats: await api.getStats() });
@@ -389,6 +411,7 @@ export const useApp = create<AppState>((set, get) => ({
   openAboutForUpdates: () => set({ aboutOpen: true, aboutCheckOnOpen: true }),
   clearAboutCheckOnOpen: () => set({ aboutCheckOnOpen: false }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+  setRefreshAddressId: (refreshAddressId) => set({ refreshAddressId }),
   dismissFinished: () => set({ justFinished: null }),
 
   toast(t) {

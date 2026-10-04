@@ -8,6 +8,7 @@ import { DownloadList } from "./components/DownloadList";
 import { DropZone } from "./components/DropZone";
 import { MenuBar } from "./components/MenuBar";
 import { PasteDialog } from "./components/PasteDialog";
+import { RefreshAddressDialog } from "./components/RefreshAddressDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -175,6 +176,7 @@ export function App() {
       <WhatsNewDialog />
       <AddDialog />
       <PasteDialog />
+      <RefreshAddressDialog />
       <SettingsDialog />
       <CommandPalette />
       <CompletionDialog />
