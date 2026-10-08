@@ -25,6 +25,7 @@ bytes.workspace = true
 parking_lot.workspace = true
 rusqlite.workspace = true
 percent-encoding.workspace = true
+downpour-vault = { path = "../downpour-vault" }
 
 [dev-dependencies]
 anyhow.workspace = true

@@ -6,6 +6,7 @@
 //! progress), so a single connection behind a mutex is more than fast enough
 //! and avoids a pool's complexity.
 
+use crate::credentials::{self, RequestHeaders, SystemVault, Vault};
 use crate::error::{Error, Result};
 use crate::model::{DownloadItem, DownloadStatus};
 use crate::settings::Settings;
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Incremented for every schema change; `migrate` applies each step in order.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Every column `row_to_item` reads, in the order it reads them. Shared so the
 /// active list and the history list cannot drift apart: they differ only in
@@ -27,11 +28,14 @@ const ITEM_COLUMNS: &str = "id, url, final_url, filename, user_named, name_locke
      total_bytes, downloaded_bytes, connections, supports_range,
      category, source, scheduled, error, checksum,
      created_at, sequence, started_at, completed_at, elapsed_ms, removed_at,
-     media_page_url, media_format_id";
+     media_page_url, media_format_id, sealed_headers";
 
 #[derive(Clone)]
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    /// Seals the request credentials a download keeps (see
+    /// [`crate::credentials`]). The `headers` column never holds one.
+    vault: Arc<dyn Vault>,
 }
 
 impl std::fmt::Debug for Store {
@@ -42,6 +46,12 @@ impl std::fmt::Debug for Store {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_vault(path, Arc::new(SystemVault))
+    }
+
+    /// Opens a store whose credentials are sealed by `vault` rather than the
+    /// operating system's, for the tests.
+    pub fn open_with_vault(path: &Path, vault: Arc<dyn Vault>) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| Error::Io {
                 path: parent.to_path_buf(),
@@ -49,22 +59,22 @@ impl Store {
             })?;
         }
         let conn = Connection::open(path)?;
-        Self::configure(&conn)?;
-        let store = Self {
-            conn: Arc::new(Mutex::new(conn)),
-        };
-        store.migrate()?;
-        Ok(store)
+        Self::over(conn, vault)
     }
 
     /// In-memory store, used by the test suite.
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
+        Self::over(Connection::open_in_memory()?, Arc::new(SystemVault))
+    }
+
+    fn over(conn: Connection, vault: Arc<dyn Vault>) -> Result<Self> {
         Self::configure(&conn)?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
+            vault,
         };
         store.migrate()?;
+        store.scrub_if_pending()?;
         Ok(store)
     }
 
@@ -74,6 +84,10 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // Deleted and overwritten content is zeroed rather than left in free
+        // pages, so a credential that was purged or re-sealed does not linger
+        // in the file where it used to be.
+        conn.pragma_update(None, "secure_delete", "ON")?;
         Ok(())
     }
 
@@ -139,11 +153,9 @@ impl Store {
             // queue, and a copy-and-swap risks all of it for a column every
             // existing row is happy to leave empty. NULL means "still in the
             // list", which is exactly what every pre-existing row is.
+            add_column(&tx, "removed_at", "INTEGER")?;
             tx.execute_batch(
-                r#"
-                ALTER TABLE downloads ADD COLUMN removed_at INTEGER;
-                CREATE INDEX IF NOT EXISTS idx_downloads_removed ON downloads(removed_at);
-                "#,
+                "CREATE INDEX IF NOT EXISTS idx_downloads_removed ON downloads(removed_at);",
             )?;
         }
 
@@ -151,16 +163,52 @@ impl Store {
             // Where a media download's address came from, so an expired one can
             // be resolved again. Added in place for the same reason as
             // `removed_at`: every existing row is content to leave it empty.
-            tx.execute_batch(
-                r#"
-                ALTER TABLE downloads ADD COLUMN media_page_url TEXT;
-                ALTER TABLE downloads ADD COLUMN media_format_id TEXT;
-                "#,
-            )?;
+            add_column(&tx, "media_page_url", "TEXT")?;
+            add_column(&tx, "media_format_id", "TEXT")?;
+        }
+
+        if current < 4 {
+            // Request credentials move out of the plain `headers` column. Every
+            // row is rewritten: the credentials of a download that can still
+            // resume are sealed into the new column, everyone else's -- the
+            // finished, the removed -- are dropped, and `headers` keeps only
+            // what is harmless to show. All in this transaction, so a crash
+            // leaves either the old rows or the new ones, never a mix.
+            //
+            // This also runs again after a downgrade and upgrade: an older
+            // version resets `user_version` to its own and writes credentials
+            // in the clear, and coming back here puts them away again.
+            add_column(&tx, "sealed_headers", "BLOB")?;
+            if seal_plaintext_credentials(&tx, self.vault.as_ref())? > 0 {
+                // Rewriting a row leaves its old bytes in the WAL and,
+                // without `secure_delete` at the time they were written, in
+                // free pages. Recorded inside the transaction so a crash before
+                // the scrub runs is caught by the next open.
+                tx.execute(
+                    "INSERT INTO kv (key, value) VALUES (?1, '1')
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![SCRUB_FLAG],
+                )?;
+            }
         }
 
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Rebuilds the file if a migration left plaintext credentials behind in
+    /// it, then empties the write-ahead log, so the only copy left is the
+    /// sealed one.
+    fn scrub_if_pending(&self) -> Result<()> {
+        if !self.flag(SCRUB_FLAG)? {
+            return Ok(());
+        }
+        let conn = self.conn.lock();
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        conn.execute_batch("VACUUM")?;
+        conn.execute("DELETE FROM kv WHERE key = ?1", params![SCRUB_FLAG])?;
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }
 
@@ -175,6 +223,13 @@ impl Store {
     /// cannot resurrect the row into the active list. A fresh insert leaves the
     /// column NULL, which is what a new download wants anyway.
     pub fn upsert(&self, item: &DownloadItem) -> Result<()> {
+        // Sealed before the lock: the platform call is quick, but SQLite has
+        // no reason to wait on it.
+        let sealed = if keeps_credentials(item.status) {
+            credentials::seal(self.vault.as_ref(), &item.headers)
+        } else {
+            None
+        };
         let conn = self.conn.lock();
         conn.execute(
             r#"
@@ -184,10 +239,10 @@ impl Store {
                 total_bytes, downloaded_bytes, connections, supports_range,
                 category, source, scheduled, error, checksum,
                 created_at, sequence, started_at, completed_at, elapsed_ms,
-                media_page_url, media_format_id
+                media_page_url, media_format_id, sealed_headers
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+                ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
             )
             ON CONFLICT(id) DO UPDATE SET
                 url = excluded.url,
@@ -211,7 +266,11 @@ impl Store {
                 completed_at = excluded.completed_at,
                 elapsed_ms = excluded.elapsed_ms,
                 media_page_url = excluded.media_page_url,
-                media_format_id = excluded.media_format_id
+                media_format_id = excluded.media_format_id,
+                -- A write that raced the download's removal must not put back
+                -- the credentials the removal purged.
+                sealed_headers = CASE WHEN downloads.removed_at IS NULL
+                                      THEN excluded.sealed_headers END
             "#,
             params![
                 item.id,
@@ -221,7 +280,7 @@ impl Store {
                 item.user_named as i64,
                 item.name_locked as i64,
                 item.dest_dir.to_string_lossy(),
-                serde_json::to_string(&item.headers)?,
+                serde_json::to_string(&item.headers.public())?,
                 status_str(item.status),
                 item.total_bytes.map(|v| v as i64),
                 item.downloaded_bytes as i64,
@@ -239,6 +298,7 @@ impl Store {
                 item.elapsed_ms as i64,
                 item.media.as_ref().map(|m| m.page_url.as_str()),
                 item.media.as_ref().map(|m| m.format_id.as_str()),
+                sealed,
             ],
         )?;
         Ok(())
@@ -258,13 +318,22 @@ impl Store {
     fn query_items(&self, tail: &str) -> Result<Vec<DownloadItem>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(&format!("SELECT {ITEM_COLUMNS} FROM downloads {tail}"))?;
-        let rows = stmt.query_map([], row_to_item)?;
+        let rows = stmt
+            .query_map([], row_to_item)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        drop(conn);
 
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
+        Ok(rows
+            .into_iter()
+            .map(|(mut item, sealed)| {
+                if let Some(sealed) = sealed {
+                    item.headers
+                        .extend(credentials::unseal(self.vault.as_ref(), &sealed));
+                }
+                item
+            })
+            .collect())
     }
 
     /// The highest queue position ever handed out, removed rows included.
@@ -283,12 +352,17 @@ impl Store {
 
     /// Moves one row into the history, stamped with the moment it left the list.
     ///
+    /// Its credentials go with it. Removing a download deletes whatever it had
+    /// downloaded, so nothing remains that they could resume, and the history
+    /// records what the file was, not the session that fetched it.
+    ///
     /// A row already in the history is left alone: a stale multi-select or a
     /// second `clear_finished` would otherwise re-stamp it and quietly extend
     /// its retention past the point the user asked for.
     pub fn mark_removed(&self, id: &str, at: i64) -> Result<bool> {
         let n = self.conn.lock().execute(
-            "UPDATE downloads SET removed_at = ?2 WHERE id = ?1 AND removed_at IS NULL",
+            "UPDATE downloads SET removed_at = ?2, sealed_headers = NULL
+             WHERE id = ?1 AND removed_at IS NULL",
             params![id, at],
         )?;
         Ok(n > 0)
@@ -321,8 +395,8 @@ impl Store {
         drop(stmt);
 
         let sql = format!(
-            "UPDATE downloads SET removed_at = ? WHERE removed_at IS NULL
-             AND status IN ({placeholders})"
+            "UPDATE downloads SET removed_at = ?, sealed_headers = NULL
+             WHERE removed_at IS NULL AND status IN ({placeholders})"
         );
         let mut args: Vec<String> = vec![at.to_string()];
         args.extend(names);
@@ -435,11 +509,22 @@ impl Store {
 }
 
 /// Builds an item from a row selected with [`ITEM_COLUMNS`].
-fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadItem> {
+///
+/// The sealed credentials come back beside it, for the caller to open once the
+/// connection's lock is released.
+fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<(DownloadItem, Option<Vec<u8>>)> {
     let dest: String = row.get(6)?;
     let headers_raw: String = row.get(7)?;
     let status_raw: String = row.get(8)?;
-    Ok(DownloadItem {
+    // Only what is safe in the clear is read from this column. A credential
+    // found here was written by an older version after this one migrated; the
+    // next open migrates it again, and until then it is not used.
+    let mut headers: RequestHeaders =
+        serde_json::from_str::<BTreeMap<String, String>>(&headers_raw)
+            .unwrap_or_default()
+            .into();
+    headers.drop_secrets();
+    let item = DownloadItem {
         awaiting_address_until: None,
         address_expired: false,
         id: row.get(0)?,
@@ -449,7 +534,7 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadItem> {
         user_named: row.get::<_, i64>(4)? != 0,
         name_locked: row.get::<_, i64>(5)? != 0,
         dest_dir: PathBuf::from(dest),
-        headers: serde_json::from_str::<BTreeMap<String, String>>(&headers_raw).unwrap_or_default(),
+        headers,
         // A status we do not recognise (a downgrade, a hand-edited row)
         // becomes Paused rather than poisoning the whole load.
         status: parse_status(&status_raw).unwrap_or(DownloadStatus::Paused),
@@ -481,7 +566,79 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<DownloadItem> {
             }),
             _ => None,
         },
-    })
+    };
+    Ok((item, row.get(26)?))
+}
+
+/// Whether a download in this state may keep its credentials. A finished one
+/// has nothing left to fetch with them.
+fn keeps_credentials(status: DownloadStatus) -> bool {
+    status != DownloadStatus::Completed
+}
+
+/// Records that the file may still hold plaintext credentials from before they
+/// were sealed, until [`Store::scrub_if_pending`] rebuilds it.
+const SCRUB_FLAG: &str = "scrub_pending";
+
+/// Adds a column unless it is already there. `ADD COLUMN` is not idempotent,
+/// and a database that went through an older version after this one comes back
+/// with its schema ahead of its `user_version`.
+fn add_column(tx: &rusqlite::Transaction<'_>, name: &str, decl: &str) -> Result<()> {
+    let exists: bool = tx.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('downloads') WHERE name = ?1",
+        params![name],
+        |r| r.get::<_, i64>(0).map(|n| n > 0),
+    )?;
+    if !exists {
+        tx.execute_batch(&format!("ALTER TABLE downloads ADD COLUMN {name} {decl};"))?;
+    }
+    Ok(())
+}
+
+/// Moves every credential still in the plain `headers` column out of it: into
+/// `sealed_headers` for a download that can still resume, nowhere for one that
+/// cannot. Returns how many rows changed.
+fn seal_plaintext_credentials(tx: &rusqlite::Transaction<'_>, vault: &dyn Vault) -> Result<usize> {
+    type Row = (String, String, String, Option<i64>, Option<Vec<u8>>);
+    let rows: Vec<Row> = {
+        let mut stmt =
+            tx.prepare("SELECT id, headers, status, removed_at, sealed_headers FROM downloads")?;
+        let mapped = stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })?;
+        mapped.collect::<std::result::Result<_, _>>()?
+    };
+
+    let mut changed = 0;
+    for (id, raw, status, removed_at, sealed) in rows {
+        let headers: RequestHeaders = match serde_json::from_str::<BTreeMap<String, String>>(&raw) {
+            Ok(map) if !map.keys().any(|k| credentials::is_sensitive(k)) => continue,
+            Ok(map) => map.into(),
+            // Unreadable, so it cannot be split -- and it might hold a
+            // credential. It was already being read as no headers at all.
+            Err(_) => RequestHeaders::new(),
+        };
+        let keep = removed_at.is_none() && parse_status(&status).is_some_and(keeps_credentials);
+        let resealed = if keep {
+            // Anything already sealed is older than what an older version
+            // since wrote in the clear; the plaintext wins where they overlap.
+            let mut all: RequestHeaders = sealed
+                .as_deref()
+                .map(|s| credentials::unseal(vault, s))
+                .unwrap_or_default()
+                .into();
+            all.extend(headers.secrets());
+            credentials::seal(vault, &all)
+        } else {
+            None
+        };
+        tx.execute(
+            "UPDATE downloads SET headers = ?2, sealed_headers = ?3 WHERE id = ?1",
+            params![id, serde_json::to_string(&headers.public())?, resealed],
+        )?;
+        changed += 1;
+    }
+    Ok(changed)
 }
 
 fn status_str(s: DownloadStatus) -> &'static str {
@@ -536,7 +693,7 @@ mod tests {
             user_named: false,
             name_locked: true,
             dest_dir: PathBuf::from("D:/dl"),
-            headers,
+            headers: headers.into(),
             status,
             total_bytes: Some(1000),
             downloaded_bytes: 250,

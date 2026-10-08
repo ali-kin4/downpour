@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::all)]
 
+pub mod credentials;
 pub mod error;
 pub mod model;
 pub mod naming;

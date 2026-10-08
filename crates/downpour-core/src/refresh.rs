@@ -145,7 +145,7 @@ mod tests {
             user_named: false,
             name_locked: true,
             dest_dir: Default::default(),
-            headers,
+            headers: headers.into(),
             status: DownloadStatus::Paused,
             total_bytes: size,
             downloaded_bytes: 0,

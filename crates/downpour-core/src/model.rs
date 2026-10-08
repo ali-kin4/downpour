@@ -3,8 +3,8 @@
 //! Every type here is `serde`-serialisable and is the exact shape the frontend
 //! receives over IPC, so changing one is a breaking API change for the UI.
 
+pub use crate::credentials::RequestHeaders;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Stable identifier for a download. UUID v4 rendered as a plain string, so the
@@ -80,8 +80,10 @@ pub struct DownloadSpec {
     /// Per-download request headers. This carries `Cookie`, `Referer` and
     /// `User-Agent` captured by the browser extension, which is the only way
     /// session-gated files download correctly. Present from schema v1 on purpose.
+    /// The credentials among them are never serialised back out; see
+    /// [`crate::credentials`].
     #[serde(default)]
-    pub headers: BTreeMap<String, String>,
+    pub headers: RequestHeaders,
     /// Explicit filename. When `None` the engine derives one from
     /// `Content-Disposition`, then the URL path, then a fallback.
     #[serde(default)]
@@ -305,7 +307,9 @@ pub struct DownloadItem {
     /// fresh `(1)` suffix every attempt and restart the download each time.
     pub name_locked: bool,
     pub dest_dir: PathBuf,
-    pub headers: BTreeMap<String, String>,
+    /// What the transfer sends. Serialised -- to the window, to an event --
+    /// without the credentials, which stay in the engine.
+    pub headers: RequestHeaders,
     pub status: DownloadStatus,
     pub total_bytes: Option<u64>,
     pub downloaded_bytes: u64,

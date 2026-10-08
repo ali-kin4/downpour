@@ -179,9 +179,9 @@ export async function onClipboardCapture(
 /**
  * A download the browser intercepted, waiting to be confirmed.
  *
- * Carries the headers with it. The browser's cookies are the reason a
- * session-gated file arrives as the file, and re-fetching the URL from the app
- * after the user says yes would arrive without them.
+ * Carries only the headers that are safe to show. The browser's session
+ * (cookies, authorization) stays in the app and is put back on by
+ * `acceptPending`, so taking the download still fetches it signed in.
  */
 export interface PendingDownload {
   /** Identifies the request while it waits; nothing is in the engine yet. */
@@ -196,6 +196,12 @@ export interface PendingDownload {
 
 /** What is waiting to be confirmed right now. Read when the panel loads. */
 export const pendingDownloads = () => call<PendingDownload[]>("pending_downloads");
+/**
+ * Takes a waiting download. The app restores the browser session it arrived
+ * with; `request` carries the user's answer (folder, start mode).
+ */
+export const acceptPending = (id: string, request: AddRequest) =>
+  call<DownloadId>("accept_pending", { id, request });
 /** Drops an answered download from the waiting list, however it was answered. */
 export const resolvePending = (id: string) => call<void>("resolve_pending", { id });
 

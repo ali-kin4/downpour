@@ -43,7 +43,10 @@ pub struct PendingDownload {
     /// there is no download id to use.
     pub id: String,
     pub url: String,
-    pub headers: std::collections::BTreeMap<String, String>,
+    /// Serialised without the credentials: the panel shows the download and
+    /// hands back its answer, and [`accept_pending`](crate::commands::accept_pending)
+    /// puts the session back on from here. The webview never holds it.
+    pub headers: downpour_core::model::RequestHeaders,
     pub filename: Option<String>,
     pub dest_dir: Option<std::path::PathBuf>,
     pub size_hint: Option<u64>,

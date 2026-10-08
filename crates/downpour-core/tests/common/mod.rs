@@ -84,6 +84,9 @@ pub struct ServerState {
     /// header, so a test can prove a session never reached a host it was not
     /// captured for.
     pub credentialed_requests: AtomicUsize,
+    /// When set, a request without exactly this `Cookie` gets `403`: a file
+    /// behind a login, which only the captured session can fetch.
+    pub required_cookie: Mutex<Option<String>>,
     /// Answer this many ranged requests with `429` and `Retry-After`.
     pub rate_limit_remaining: AtomicUsize,
     pub retry_after_secs: AtomicUsize,
@@ -133,6 +136,9 @@ impl ServerState {
     }
     pub fn rate_limited_count(&self) -> usize {
         self.rate_limited.load(Ordering::SeqCst)
+    }
+    pub async fn require_cookie(&self, cookie: &str) {
+        *self.required_cookie.lock().await = Some(cookie.to_string());
     }
     pub fn credentialed_count(&self) -> usize {
         self.credentialed_requests.load(Ordering::SeqCst)
@@ -228,6 +234,7 @@ pub async fn start_with(data: Vec<u8>, mode: Mode, etag: Option<&str>) -> TestSe
         honour_if_range: AtomicBool::new(true),
         refuse_every_if_range: AtomicBool::new(false),
         credentialed_requests: AtomicUsize::new(0),
+        required_cookie: Mutex::new(None),
         rate_limit_remaining: AtomicUsize::new(0),
         retry_after_secs: AtomicUsize::new(0),
         rate_limited: AtomicUsize::new(0),
@@ -278,6 +285,15 @@ async fn serve(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Res
         state.credentialed_requests.fetch_add(1, Ordering::SeqCst);
     }
     let nth = state.requests.fetch_add(1, Ordering::SeqCst) + 1;
+    if let Some(required) = state.required_cookie.lock().await.as_deref() {
+        let sent = headers.get("cookie").and_then(|v| v.to_str().ok());
+        if sent != Some(required) {
+            return Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .body(Body::empty())
+                .unwrap();
+        }
+    }
     {
         let mut pending = state.pending_change.lock().await;
         if pending.as_ref().is_some_and(|(at, _)| nth >= *at) {

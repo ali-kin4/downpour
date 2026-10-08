@@ -486,7 +486,7 @@ impl Engine {
             item.url = url.to_string();
             item.final_url = None;
             if let Some(headers) = headers {
-                item.headers = headers;
+                item.headers = headers.into();
             }
             item.error = None;
             // A new address, however it arrived, is what the wait was for.
@@ -923,6 +923,9 @@ impl Engine {
             }
             if status == DownloadStatus::Completed {
                 item.completed_at = Some(now_unix());
+                // Nothing is left to fetch, so the session that fetched it is
+                // not kept -- not in the list, not on disk, not in the history.
+                item.headers.drop_secrets();
             }
         }
         // Tallied here because this is the one place a download reaches a
@@ -1253,7 +1256,7 @@ impl Engine {
         tokio::spawn(async move {
             let ctx = TransferContext {
                 client,
-                headers: item.headers.clone(),
+                headers: item.headers.clone().into_inner(),
                 control,
                 limiter,
                 progress,

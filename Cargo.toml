@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/downpour-core", "crates/downpour-cli", "src-tauri"]
+members = ["crates/downpour-core", "crates/downpour-vault", "crates/downpour-cli", "src-tauri"]
 
 [workspace.package]
 version = "1.5.3"

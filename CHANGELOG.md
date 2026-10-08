@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Browser sessions are no longer stored in the clear.** A download handed
+  over by the browser carries the cookies and authorization of the signed-in
+  session, and Downpour kept them as plain text in its database for as long as
+  the download stayed in the list or the history. They are now sealed with
+  Windows' per-user data protection (DPAPI), so only the same Windows account
+  on the same machine can read them, and they are kept only while the download
+  can still use them: a finished download, and any download removed to the
+  history, forgets them. Upgrading seals or deletes every session an earlier
+  version stored, and rebuilds the database file so no plaintext copy is left
+  behind. Credentials also no longer reach the window, the confirmation panel
+  or the logs, and log text copied for a bug report has any that slipped in
+  masked. A download that finished before the upgrade and is started again
+  may need its address refreshed from the browser.
+
 ### Added
 
 - **Refresh download address.** A paused or failed download can be given a

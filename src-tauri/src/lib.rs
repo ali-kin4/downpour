@@ -83,6 +83,7 @@ pub fn run() {
             commands::regenerate_rpc_token,
             commands::pending_downloads,
             commands::resolve_pending,
+            commands::accept_pending,
             commands::open_pairing_window,
             commands::pairing_seconds_left,
             commands::show_main_window,

@@ -104,15 +104,15 @@ export function ConfirmWindow() {
       if (!pending || busy) return;
       setBusy(true);
       try {
-        await api.addDownload({
+        // The app puts the browser's session back on: it never came to this
+        // window. Without it a login-gated file would arrive as the login page.
+        await api.acceptPending(pending.id, {
           url: pending.url,
           filename: pending.filename,
           destDir: destDir.trim() || null,
           connections: null,
           startMode,
           checksum: null,
-          // The browser's session, carried across verbatim. Without these a
-          // login-gated file arrives as the login page instead of the file.
           headers: pending.headers,
           source: pending.source ?? "extension",
         });

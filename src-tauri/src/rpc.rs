@@ -267,7 +267,7 @@ impl From<AddItem> for DownloadSpec {
         DownloadSpec {
             media: None,
             url: i.url,
-            headers: i.headers,
+            headers: i.headers.into(),
             filename: i.filename,
             dest_dir: i.dest_dir.unwrap_or_default(),
             connections: None,
@@ -455,7 +455,7 @@ async fn add_one(
         let entry = crate::state::PendingDownload {
             id: uuid::Uuid::new_v4().to_string(),
             url: item.url,
-            headers: item.headers,
+            headers: item.headers.into(),
             filename: item.filename,
             dest_dir: item.dest_dir,
             size_hint: item.size_hint,

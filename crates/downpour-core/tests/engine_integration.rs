@@ -29,7 +29,7 @@ fn spec(url: &str, dir: &Path, name: &str, mode: StartMode) -> DownloadSpec {
     DownloadSpec {
         media: None,
         url: url.to_string(),
-        headers: BTreeMap::new(),
+        headers: BTreeMap::new().into(),
         filename: Some(name.to_string()),
         dest_dir: dir.to_path_buf(),
         connections: None,
@@ -2691,10 +2691,10 @@ async fn a_retriggered_download_becomes_the_new_address_of_the_one_waiting_for_i
     );
     let item = engine.get(&id).unwrap();
     assert_eq!(item.url, fresh);
-    assert_eq!(
-        item.headers.get("Cookie").map(String::as_str),
-        Some("session=fresh")
-    );
+    // The capture's session fetched the rest of the file, and is not kept
+    // once there is nothing left to fetch.
+    assert!(server.state.credentialed_count() > 0);
+    assert!(item.headers.get("Cookie").is_none());
     assert!(item.awaiting_address_until.is_none());
     assert_eq!(
         sha256(&std::fs::read(item.target_path()).unwrap()),

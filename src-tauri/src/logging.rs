@@ -171,7 +171,10 @@ pub fn tail(data_dir: &Path, lines: usize) -> String {
     };
 
     let all: Vec<&str> = text.lines().collect();
-    all[all.len().saturating_sub(lines)..].join("\n")
+    // Everything that reads the log reads it through here -- the in-app view
+    // and the diagnostics a user pastes into a public bug report -- so this is
+    // where a credential that found its way into a log line is masked.
+    downpour_core::credentials::redact(&all[all.len().saturating_sub(lines)..].join("\n"))
 }
 
 #[cfg(test)]
@@ -234,6 +237,27 @@ mod tests {
     fn tail_of_a_missing_directory_is_empty_rather_than_an_error() {
         let dir = temp_dir("log3");
         assert_eq!(tail(&dir, 50), "");
+    }
+
+    #[test]
+    fn tail_never_hands_out_a_credential() {
+        let data = temp_dir("log5");
+        let dir = log_dir(&data);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("downpour.log.2026-10-08"),
+            "INFO request headers={\"Cookie\": \"sid=Q7-leak\", \"Referer\": \"https://x/\"}\n\
+             DEBUG authorization: Bearer abc-leak\n\
+             INFO finished\n",
+        )
+        .unwrap();
+        let text = tail(&data, 50);
+        assert!(
+            !text.contains("Q7-leak") && !text.contains("abc-leak"),
+            "{text}"
+        );
+        assert!(text.contains("https://x/") && text.contains("finished"));
+        let _ = fs::remove_dir_all(&data);
     }
 
     #[test]

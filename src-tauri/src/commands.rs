@@ -102,7 +102,7 @@ impl From<AddRequest> for DownloadSpec {
         DownloadSpec {
             media: None,
             url: r.url,
-            headers: r.headers,
+            headers: r.headers.into(),
             filename: r.filename,
             dest_dir: r.dest_dir.unwrap_or_default(),
             connections: r.connections,
@@ -438,6 +438,34 @@ pub fn pairing_seconds_left(state: State<'_, AppState>) -> u32 {
 #[tauri::command]
 pub fn pending_downloads(state: State<'_, AppState>) -> Vec<crate::state::PendingDownload> {
     state.pending.lock().clone()
+}
+
+/// Takes a waiting download, with the browser session it arrived with.
+///
+/// The panel never sees that session -- it is serialised without it -- so the
+/// answer carries everything else and the credentials are put back here, from
+/// the copy that never left the app.
+#[tauri::command]
+pub fn accept_pending(
+    state: State<'_, AppState>,
+    id: String,
+    request: AddRequest,
+) -> CmdResult<String> {
+    let pending = state
+        .pending
+        .lock()
+        .iter()
+        .find(|p| p.id == id)
+        .cloned()
+        .ok_or_else(|| "this download is no longer waiting to be confirmed".to_string())?;
+    let mut spec: DownloadSpec = request.into();
+    spec.url = pending.url;
+    spec.headers = pending.headers;
+    state.resolved_sources.attach(&mut spec);
+    let added = state.engine.add(spec).map_err(err)?;
+    // Only once it is in: a refusal leaves the question open to answer again.
+    state.pending.lock().retain(|p| p.id != id);
+    Ok(added)
 }
 
 /// Drops an answered download from the waiting list, however it was answered.

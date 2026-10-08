@@ -34,10 +34,13 @@ pub fn build_headers(headers: &BTreeMap<String, String>) -> HeaderMap {
         if k.eq_ignore_ascii_case("range") || k.eq_ignore_ascii_case("accept-encoding") {
             continue;
         }
-        if let (Ok(name), Ok(value)) = (
+        if let (Ok(name), Ok(mut value)) = (
             HeaderName::from_bytes(k.as_bytes()),
             HeaderValue::from_str(v),
         ) {
+            // Marked so the HTTP stack masks it in its own debug output, which
+            // a user chasing a bug can switch on with `DOWNPOUR_LOG`.
+            value.set_sensitive(crate::credentials::is_sensitive(k));
             map.insert(name, value);
         }
     }
