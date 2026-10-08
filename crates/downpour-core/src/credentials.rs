@@ -9,8 +9,9 @@
 //! - **They are never stored in the clear.** The database keeps them only
 //!   sealed by the operating system's per-user protection (see [`Vault`]);
 //!   where there is none, they are not kept at all.
-//! - **They are kept only while they can still be used.** A finished,
-//!   cancelled or removed download cannot be resumed, so its credentials go.
+//! - **They are kept only while they can still be used.** A finished or
+//!   removed download cannot be resumed, so its credentials go. A cancelled one
+//!   still in the list keeps them: its part file is still there to restart.
 //!   What remains in the list and the history is what the file was, not the
 //!   session that fetched it.
 //! - **They do not travel further than the transfer.** [`RequestHeaders`]

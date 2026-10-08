@@ -419,6 +419,74 @@ async fn a_downgrade_and_upgrade_puts_the_session_away_again() {
 }
 
 #[tokio::test]
+async fn a_pasted_address_on_another_site_gets_none_of_the_old_session() {
+    let dir = TempDir::new();
+    let engine = open_engine(&dir.join("downpour.db"), None);
+    let id = engine
+        .add(spec(
+            "https://site.example/a.bin",
+            dir.path(),
+            StartMode::AddOnly,
+        ))
+        .unwrap();
+
+    // Same site, new signature: the session is what makes it work.
+    engine
+        .refresh_address(&id, "https://site.example/a.bin?sig=2", None)
+        .unwrap();
+    assert!(engine.get(&id).unwrap().headers.has_secrets());
+
+    // A mirror the user pasted is not the site they signed in to.
+    engine
+        .refresh_address(&id, "https://mirror.example.net/a.bin", None)
+        .unwrap();
+    let item = engine.get(&id).unwrap();
+    assert!(!item.headers.has_secrets(), "{:?}", item.headers);
+    assert!(item.headers.contains_key("Referer"));
+}
+
+#[tokio::test]
+async fn a_session_an_older_version_left_on_a_finished_row_is_cleared() {
+    let dir = TempDir::new();
+    let db = dir.join("downpour.db");
+    v2_database(&db);
+    drop(Store::open_with_vault(&db, vault()).unwrap());
+    assert!(raw_row(&db, "paused").1.is_some());
+
+    // v1.5.3 finishes the download: it rewrites the status and stamps its own
+    // schema version, and never looks at the sealed column.
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute(
+            "UPDATE downloads SET status = 'completed' WHERE id = 'paused'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE downloads SET removed_at = 9 WHERE id = 'failed'",
+            [],
+        )
+        .unwrap();
+    }
+
+    let store = Store::open_with_vault(&db, vault()).unwrap();
+    for id in ["paused", "failed"] {
+        assert!(raw_row(&db, id).1.is_none(), "{id} kept its session");
+    }
+    assert!(store
+        .load_active()
+        .unwrap()
+        .iter()
+        .all(|i| !i.headers.has_secrets()));
+    assert!(store
+        .load_removed()
+        .unwrap()
+        .iter()
+        .all(|i| !i.headers.has_secrets()));
+}
+
+#[tokio::test]
 async fn corrupt_sealed_credentials_load_as_none_rather_than_as_garbage() {
     let dir = TempDir::new();
     let db = dir.join("downpour.db");

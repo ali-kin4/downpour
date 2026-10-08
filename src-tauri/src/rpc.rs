@@ -407,12 +407,21 @@ async fn add_one(
     // only on a clear match; anything less becomes an ordinary capture below,
     // because attaching on a guess is worse than a duplicate the user can
     // delete. Any 2xx tells the extension to take the browser's copy away.
-    match state.engine.claim_new_address(
-        &item.url,
-        &item.headers,
-        item.filename.as_deref(),
-        item.size_hint,
-    ) {
+    //
+    // Only an ordinary capture can be the download started again; one sent to
+    // be held or scheduled is a deliberate new entry, and must not start a
+    // waiting download behind the user's back.
+    let claim = if item.start_mode == StartMode::Start {
+        state.engine.claim_new_address(
+            &item.url,
+            &item.headers,
+            item.filename.as_deref(),
+            item.size_hint,
+        )
+    } else {
+        AddressClaim::NoMatch
+    };
+    match claim {
         AddressClaim::Attached(id) => {
             let filename = state
                 .engine

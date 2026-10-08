@@ -74,7 +74,12 @@ impl Store {
             vault,
         };
         store.migrate()?;
-        store.scrub_if_pending()?;
+        // Best effort: VACUUM needs as much free space again as the file, and
+        // a full disk must not stop the app from opening. The flag stays set,
+        // so the next open tries again.
+        if let Err(e) = store.scrub_if_pending() {
+            tracing::warn!(error = %e, "could not rebuild the database after sealing credentials; will retry");
+        }
         Ok(store)
     }
 
@@ -327,7 +332,10 @@ impl Store {
         Ok(rows
             .into_iter()
             .map(|(mut item, sealed)| {
-                if let Some(sealed) = sealed {
+                // Never back onto a download that has no use for them, whatever
+                // the column holds.
+                let wanted = item.removed_at.is_none() && keeps_credentials(item.status);
+                if let Some(sealed) = sealed.filter(|_| wanted) {
                     item.headers
                         .extend(credentials::unseal(self.vault.as_ref(), &sealed));
                 }
@@ -612,7 +620,21 @@ fn seal_plaintext_credentials(tx: &rusqlite::Transaction<'_>, vault: &dyn Vault)
     let mut changed = 0;
     for (id, raw, status, removed_at, sealed) in rows {
         let headers: RequestHeaders = match serde_json::from_str::<BTreeMap<String, String>>(&raw) {
-            Ok(map) if !map.keys().any(|k| credentials::is_sensitive(k)) => continue,
+            Ok(map) if !map.keys().any(|k| credentials::is_sensitive(k)) => {
+                // Nothing in the clear -- but an older version may have
+                // finished or removed this download without touching the
+                // sealed column it does not know about.
+                let still_wanted =
+                    removed_at.is_none() && parse_status(&status).is_some_and(keeps_credentials);
+                if sealed.is_some() && !still_wanted {
+                    tx.execute(
+                        "UPDATE downloads SET sealed_headers = NULL WHERE id = ?1",
+                        params![id],
+                    )?;
+                    changed += 1;
+                }
+                continue;
+            }
             Ok(map) => map.into(),
             // Unreadable, so it cannot be split -- and it might hold a
             // credential. It was already being read as no headers at all.

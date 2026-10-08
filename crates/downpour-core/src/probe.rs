@@ -57,10 +57,16 @@ pub fn build_headers(headers: &BTreeMap<String, String>) -> HeaderMap {
 pub fn headers_for(headers: &BTreeMap<String, String>, remote: &RemoteInfo) -> HeaderMap {
     let mut map = build_headers(headers);
     if !remote.credentials_follow() {
-        for name in [COOKIE, AUTHORIZATION, PROXY_AUTHORIZATION] {
+        // Every header the engine treats as a credential, not just the
+        // standard four: a site's own `X-Api-Key` is as much a session.
+        let names: Vec<_> = map
+            .keys()
+            .filter(|k| crate::credentials::is_sensitive(k.as_str()))
+            .cloned()
+            .collect();
+        for name in names {
             map.remove(name);
         }
-        map.remove("cookie2");
     }
     map
 }
@@ -292,6 +298,22 @@ mod tests {
         )));
         // Nothing recorded, as in a sidecar older than the field: not proof.
         assert!(!kept(remote("", "https://site.example/b")));
+    }
+
+    #[test]
+    fn a_sites_own_credential_headers_stay_behind_too() {
+        let mut caller = BTreeMap::new();
+        caller.insert("X-Api-Key".to_string(), "k-123".to_string());
+        caller.insert("X-Auth-Token".to_string(), "t-456".to_string());
+        caller.insert("Referer".to_string(), "https://site.example/".to_string());
+        let elsewhere = RemoteInfo {
+            requested_url: "https://site.example/a".into(),
+            final_url: "https://cdn.example/a".into(),
+            ..Default::default()
+        };
+        let h = headers_for(&caller, &elsewhere);
+        assert!(h.get("x-api-key").is_none() && h.get("x-auth-token").is_none());
+        assert!(h.get("referer").is_some());
     }
 
     #[test]

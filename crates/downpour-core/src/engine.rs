@@ -483,11 +483,15 @@ impl Engine {
                     "pause the download before giving it a new address".into(),
                 ));
             }
+            match headers {
+                Some(headers) => item.headers = headers.into(),
+                // A session belongs to the site it was captured for. A pasted
+                // address elsewhere -- a mirror, another CDN -- gets none of it.
+                None if !same_origin(&item.url, url) => item.headers.drop_secrets(),
+                None => {}
+            }
             item.url = url.to_string();
             item.final_url = None;
-            if let Some(headers) = headers {
-                item.headers = headers.into();
-            }
             item.error = None;
             // A new address, however it arrived, is what the wait was for.
             item.awaiting_address_until = None;
@@ -1803,6 +1807,19 @@ fn directory_holds_files(dir: &std::path::Path) -> bool {
 /// Statuses that mean "this address no longer gets you this file" rather than
 /// "this file does not exist": signed links expire into 403 or 410, session
 /// links into 401, and some sites answer an expired token with 404.
+/// Whether two addresses share a scheme, host and port: the boundary a
+/// captured session may not cross.
+fn same_origin(a: &str, b: &str) -> bool {
+    match (url::Url::parse(a), url::Url::parse(b)) {
+        (Ok(a), Ok(b)) => {
+            a.scheme() == b.scheme()
+                && a.host_str() == b.host_str()
+                && a.port_or_known_default() == b.port_or_known_default()
+        }
+        _ => false,
+    }
+}
+
 fn address_refused(status: u16) -> bool {
     matches!(status, 401 | 403 | 404 | 410)
 }
