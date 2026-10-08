@@ -40,6 +40,49 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    version: "1.6.0",
+    date: "2026-10-08",
+    summary:
+      "Safer downloads and safer sign-ins. Updating is recommended: this release fixes how files are resumed and how your browser session is handled.",
+    notes: [
+      {
+        title: "Your browser sign-in is kept locked away",
+        detail:
+          "A download handed over by the browser carries your signed-in session so login-protected files arrive as the file. Downpour used to keep that session in plain text. It is now locked to your Windows account, forgotten once the download finishes or is removed, and never shown in the window or the logs. Upgrading tidies up anything an older version kept.",
+      },
+      {
+        title: "Your session only goes to the site it came from",
+        detail:
+          "When a download link handed off to another server, that server could be sent your cookies too. Now they only ever go to the site you were signed in to.",
+      },
+      {
+        title: "A resumed file is always the right file",
+        detail:
+          "If a file changes on the server while you are downloading it, Downpour starts it over instead of joining old and new pieces into a file that looks right and isn't. Progress also survives a sudden power cut without claiming bytes that never reached the disk.",
+      },
+      {
+        title: "Give a stuck download a new link",
+        detail:
+          "When a link expires, the download stops as paused instead of saving the site's error page as your file. Choose Refresh download address, then start it again in your browser or paste a new link, and it carries on from where it was when the file is the same.",
+      },
+      {
+        title: "Video links renew themselves",
+        detail:
+          "Video links usually expire after a while. Downpour now remembers which page a video came from and fetches a fresh link on its own, so long video downloads keep going.",
+      },
+      {
+        title: "Kinder to the sites you download from",
+        detail:
+          "Several downloads from the same site now share one connection limit, instead of each opening its own and getting you rate-limited. Pausing also stops right away, even on a slow connection.",
+      },
+      {
+        title: "Form downloads stay in the browser",
+        detail:
+          "Files a site produces when you submit a form can't be fetched again from outside the browser, so the extension now leaves those with the browser rather than handing over a link that would fail.",
+      },
+    ],
+  },
+  {
     version: "1.5.3",
     date: "2026-09-18",
     summary:

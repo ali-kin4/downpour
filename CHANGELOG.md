@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-08
+
+**Upgrading is recommended.** This release fixes how resumed files are
+verified and how browser sign-in sessions are sent and stored. All earlier
+versions are affected.
+
 ### Security
 
 - **Browser sessions are no longer stored in the clear.** A download handed
@@ -25,14 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Refresh download address.** A paused or failed download can be given a
+- **Refresh download address.** A download that is not running can be given a
   new link without losing what it has already downloaded: choose *Refresh
   download address…* and either start the download again in your browser
   (Downpour waits ten minutes and takes the matching download as the new
   link) or paste a new address. The bytes already on disk are kept only when
   the server confirms it is the same file; otherwise the download starts
   over in the same row. A browser download is only ever attached when it
-  clearly matches -- same site or page, same name and size.
+  clearly matches -- same site or page, same name and size. A pasted address
+  on a different site does not inherit the old site's sign-in. For extension
+  authors: `POST /api/v1/downloads` can now also answer `200` with
+  `"status": "refreshed"` when the capture became an existing download's new
+  address; treat it like `201` (the browser's copy should be cancelled).
 - **Video links that expire are renewed automatically.** A video download
   remembers the page and format it came from; when its link expires, Downpour
   asks the page for a fresh one and carries on, up to three times.
@@ -72,7 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   site, but every request after it went straight to the final address with
   them put back -- so a download link that handed off to a CDN gave the CDN
   the user's session. They now go only to the scheme, host and port they were
-  captured for.
+  captured for. This covers a site's own credential headers (such as
+  `X-Api-Key`) as well as cookies and authorization.
 - **Resume progress survives a power cut without vouching for lost bytes.**
   The resume file was saved every second without the downloaded data being
   forced to disk first, so after a power cut or crash it could claim bytes
@@ -851,7 +862,8 @@ First public release. Windows 10/11, 64-bit, shipped as an NSIS installer
   token compared in constant time, CORS reflected only for extension origins,
   and endpoints for adding a single download, a batch, or a blob of text.
 
-[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.5.3...HEAD
+[Unreleased]: https://github.com/ali-kin4/downpour/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/ali-kin4/downpour/releases/tag/v1.6.0
 [1.5.3]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.3
 [1.5.2]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.2
 [1.5.1]: https://github.com/ali-kin4/downpour/releases/tag/v1.5.1

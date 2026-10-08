@@ -11,9 +11,8 @@
 use crate::error::{Error, Result};
 use crate::model::RemoteInfo;
 use reqwest::header::{
-    HeaderMap, HeaderName, HeaderValue, ACCEPT_RANGES, AUTHORIZATION, CONTENT_DISPOSITION,
-    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, COOKIE, ETAG, LAST_MODIFIED, PROXY_AUTHORIZATION,
-    RANGE,
+    HeaderMap, HeaderName, HeaderValue, ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH,
+    CONTENT_RANGE, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE,
 };
 use reqwest::{Client, StatusCode};
 use std::collections::BTreeMap;
