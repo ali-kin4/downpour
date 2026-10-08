@@ -34,7 +34,8 @@ CI also runs `node --check` on every `extension/*.js` and parses every
 ## Architecture
 
 Cargo workspace: `crates/downpour-core` (engine), `src-tauri` (desktop shell),
-`crates/downpour-cli` (an empty stub — `fn main() {}`).
+`crates/downpour-vault` (DPAPI behind `protect`/`unprotect` — the only crate
+with `unsafe`), `crates/downpour-cli` (an empty stub — `fn main() {}`).
 
 **`downpour-core` knows no window exists.** All download logic lives here so it
 can be tested headlessly; `#![forbid(unsafe_code)]`. Key ideas, each explained in
@@ -45,7 +46,11 @@ its module header:
 - `probe.rs` — never trusts `Accept-Ranges`; range support is proven by a `206`
   to a real one-byte ranged GET.
 - `transfer.rs` — segmented download with work-stealing (a finished worker halves
-  the largest outstanding segment). Hard cap of 16 connections per host, by design.
+  the largest outstanding segment). Connections come from `origin.rs`: one
+  budget per scheme+host+port shared by every download, hard-capped at 16.
+- `credentials.rs` — `RequestHeaders` serialises *without* Cookie/Authorization
+  and masks them in `Debug`; the store seals them through a `Vault` and drops
+  them on completion and removal. Never persist or log a header map directly.
 - `resume.rs` — each in-flight download is `name.dpart` (bytes) + `name.dpmeta`
   (segment cursors + validators). A resume is refused unless validators match.
   Nothing is written under the final name until complete and verified.

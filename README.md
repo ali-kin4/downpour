@@ -101,6 +101,14 @@ out of the way.
   of handing you a bad file.
 - **Automatic retries** with backoff, and a clear failure reason when a
   download genuinely cannot proceed.
+- **Refresh an expired link.** A download whose link has expired stops as
+  paused rather than saving the site's error page, and can be given a new link
+  -- pasted, or caught when you start it again in the browser -- without
+  losing what it already has, when the server confirms it is the same file.
+  Video links are renewed automatically.
+- **Polite to servers.** Every download from one server shares a single
+  connection limit, so several files from one host cannot open dozens of
+  connections between them.
 - **Nothing is written under the final name until it is complete**, so a
   half-file never masquerades as a finished one.
 
@@ -118,7 +126,9 @@ out of the way.
 ### Getting links in
 
 - **Browser hand-off** with cookies, referer and user-agent attached, so
-  session-gated files arrive as the file and not as a login page.
+  session-gated files arrive as the file and not as a login page. The session
+  is sent only to the site it came from, stored only sealed with Windows'
+  per-user protection, and forgotten once the download finishes.
 - **Batch paste.** Drop in a wall of URLs and filter before anything is queued.
 - **Clipboard capture**, optionally limited to the file types you care about.
 - **Link grabber** that pulls every downloadable link off a page for you to

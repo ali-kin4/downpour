@@ -2,13 +2,15 @@
 
 ## Supported versions
 
-Downpour is pre-1.0 and moves fast. Only the latest release receives security
-fixes.
+Only the latest stable release receives security fixes. A fix ships as a new
+release, not as a patch to an older line, so the remedy for any advisory is to
+update. Downpour checks GitHub for a newer version from **About**; it does not
+update itself.
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
-| Older | No |
+| Latest stable release (currently 1.x) | Yes |
+| Any earlier release | No |
 
 ## Reporting a vulnerability
 
@@ -63,8 +65,11 @@ The properties it is required to hold:
 - CORS reflects the request `Origin` back **only** when it starts with
   `chrome-extension://` or `moz-extension://`. A reflected origin outside that
   set, or a wildcard, is a vulnerability.
-- Request bodies are capped at **256 KB** and the listener accepts at most
-  **32** concurrent connections.
+- `POST /api/v1/pair` is the one other unauthenticated endpoint. It returns
+  the token only while a pairing window the user opened in the app is running
+  (a few seconds), only to a `chrome-extension://` or `moz-extension://`
+  origin, and only once per window.
+- Request bodies are capped at **256 KB**.
 
 Things we would very much like to hear about:
 
@@ -81,7 +86,36 @@ Things we would very much like to hear about:
   `Content-Disposition`, an installer or updater that fetches over plain HTTP or
   skips verification.
 - Resume logic that can be induced to stitch mismatched content into a file that
-  still verifies.
+  still verifies. A resume must be confirmed by the validator (strong ETag, or
+  Last-Modified without one) the download began with, and every ranged response
+  is checked against it.
+- Credentials leaking somewhere they were not captured for. Cookies and
+  authorization handed over by the browser are sent only to the scheme, host
+  and port they were captured for -- never to the host a link redirects to.
+
+## Explicitly in scope: stored browser sessions
+
+A download captured from the browser carries that session's `Cookie` and
+`Authorization` headers, because a session-gated file cannot be fetched without
+them. The properties Downpour is required to hold for them:
+
+- They are **never written to disk in the clear.** The database keeps them only
+  sealed with Windows DPAPI in the current-user scope, so they open only for the
+  same Windows account on the same machine. No encryption key is stored by
+  Downpour or built into it. Where the platform protection is unavailable, they
+  are not stored at all.
+- They are kept **only while the download can still use them.** A completed
+  download forgets them, and so does any download moved to the history.
+- They do not reach the user interface, the confirmation panel, events, or log
+  output, and the log text included in copied diagnostics is masked.
+
+Any way to read a stored session without being that Windows user, a session
+that survives a download's completion or removal, or one that turns up in the
+window, a log or the diagnostics, is a vulnerability.
+
+What is **not** protected against: malware or another program already running
+as the same Windows user. DPAPI's current-user scope opens for any process of
+that user, which is also true of the browser's own cookie store.
 
 ## Out of scope
 
@@ -92,5 +126,6 @@ Things we would very much like to hear about:
 - Reports whose only finding is that a dependency has a CVE, with no argument
   that Downpour reaches the affected code path.
 - Anything requiring an attacker who already has administrator rights on the
-  machine, or physical access to an unlocked session.
+  machine, code running as the same Windows user, or physical access to an
+  unlocked session.
 - Volumetric denial of service against your own loopback listener.

@@ -730,6 +730,58 @@ mod tests {
         assert_eq!(got.total_bytes, Some(1000));
     }
 
+    fn sealed_of(s: &Store, id: &str) -> Option<Vec<u8>> {
+        s.conn
+            .lock()
+            .query_row(
+                "SELECT sealed_headers FROM downloads WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_completed_row_is_never_written_with_its_session() {
+        // The engine drops the session on completion before it persists; this
+        // is the store refusing to keep one even if handed it.
+        let s = Store::open_in_memory().unwrap();
+        s.upsert(&item("a", DownloadStatus::Paused)).unwrap();
+        assert!(sealed_of(&s, "a").is_some());
+        s.upsert(&item("a", DownloadStatus::Completed)).unwrap();
+        assert!(sealed_of(&s, "a").is_none());
+        assert!(!s.load_active().unwrap()[0].headers.has_secrets());
+    }
+
+    #[test]
+    fn a_write_racing_a_removal_does_not_restore_the_session() {
+        let s = Store::open_in_memory().unwrap();
+        s.upsert(&item("a", DownloadStatus::Running)).unwrap();
+        assert!(s.mark_removed("a", 100).unwrap());
+        // A progress write that had already read the item before it was
+        // removed lands afterwards.
+        s.upsert(&item("a", DownloadStatus::Running)).unwrap();
+        assert!(sealed_of(&s, "a").is_none());
+        assert!(!s.load_removed().unwrap()[0].headers.has_secrets());
+    }
+
+    #[test]
+    fn plaintext_planted_in_the_sealed_column_is_not_accepted() {
+        // Well-formed credential JSON, but not sealed by this user: whoever
+        // wrote it could not have, so it is not trusted as headers.
+        let s = Store::open_in_memory().unwrap();
+        s.upsert(&item("a", DownloadStatus::Paused)).unwrap();
+        s.conn
+            .lock()
+            .execute(
+                "UPDATE downloads SET sealed_headers = ?1 WHERE id = 'a'",
+                params![br#"{"Cookie":"planted=1"}"#.to_vec()],
+            )
+            .unwrap();
+        let got = s.load_active().unwrap();
+        assert!(!got[0].headers.has_secrets(), "{:?}", got[0].headers);
+    }
+
     #[test]
     fn upsert_updates_rather_than_duplicating() {
         let s = Store::open_in_memory().unwrap();
